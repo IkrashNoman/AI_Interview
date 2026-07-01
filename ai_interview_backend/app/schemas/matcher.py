@@ -12,4 +12,9 @@ class MatchAnalysisResponse(BaseModel):
 
 class MatchRequest(BaseModel):
     resume_data: ResumeSchema
-    job_description_text: str
+    job_description_text: str = Field(...,
+    title="Job Description",
+    description="Paste the full job description here for matching analysis.",
+    example="We are looking for a FastAPI developer with Python, PostgreSQL, and Docker experience."
+)
+    
