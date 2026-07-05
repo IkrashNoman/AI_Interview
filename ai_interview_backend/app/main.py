@@ -1,17 +1,25 @@
 from fastapi import FastAPI
-from app.api.v1.parser import router as parser_router
-from app.api.v1.matcher import router as matcher_router
-from app.api.v1.roadmap import router as roadmap_router
-from app.core.config import settings
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.v1 import parser, matcher
 
-# 1. This must match the name Uvicorn is looking for
-app = FastAPI(title=settings.PROJECT_NAME)
+app = FastAPI(
+    title="AI Interview Coach API", 
+    description="Phase 1: Resume Parsers & Context Engines"
+)
 
-# 2. Include the router we built in api/v1/parser.py
-# This prefixes your endpoint so it lives at http://127.0.0.1:8000/api/v1/extract
-app.include_router(parser_router, prefix="/api/v1", tags=["Parser"])
-app.include_router(matcher_router, prefix="/api/v1", tags=["Matcher"])
-app.include_router(roadmap_router, prefix="/api/v1", tags=["Project Roadmap"])
+# CRITICAL: This allows your Next.js frontend (localhost:3000) to talk to this backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register your route files here
+app.include_router(parser.router, prefix="/api/v1/parser", tags=["Parser"])
+app.include_router(matcher.router, prefix="/api/v1/matcher", tags=["Matcher"])
+
 @app.get("/")
-async def root():
-    return {"status": "healthy", "message": "AI Interview Coach Backend Operational"}
+def health_check():
+    return {"status": "operational", "message": "FastAPI is running."}

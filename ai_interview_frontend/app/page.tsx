@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud, Rocket, FileText } from "lucide-react";
+import { apiClient } from "./lib/api";
 
 type UploadState = "idle" | "processing";
 
@@ -37,23 +38,50 @@ export default function Home() {
     }
   };
 
-  const validateAndSetFile = (selectedFile: File) => {
-    if (selectedFile.type === "application/pdf") {
+const validateAndSetFile = (selectedFile: File) => {
+    const validMimeTypes = [
+      "application/pdf",
+      "application/msword", // .doc
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" // .docx
+    ];
+
+    const isValidExtension = selectedFile.name.toLowerCase().endsWith(".pdf") || 
+                             selectedFile.name.toLowerCase().endsWith(".doc") || 
+                             selectedFile.name.toLowerCase().endsWith(".docx");
+
+    if (validMimeTypes.includes(selectedFile.type) || isValidExtension) {
       setFile(selectedFile);
     } else {
-      alert("System Error: Only PDF files are accepted.");
+      alert("System Error: Only PDF and Word documents (.doc, .docx) are accepted.");
     }
   };
 
-  const extractResumeData = () => {
+  const extractResumeData = async () => {
     if (!file) return;
+    
     setUploadState("processing");
 
-    // Mocking the FastAPI JSON Extraction latency
-    setTimeout(() => {
-      // In production, you will pass the parsed JSON state to the next route via Context, Redux, or URL params
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await apiClient.post("/api/v1/parser/extract/", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+
+      // CRITICAL FIX: The backend returns the raw ResumeSchema object directly.
+      // There is no nested "data" wrapper. 
+      const parsedData = response.data;
+
+      sessionStorage.setItem("extractedResume", JSON.stringify(parsedData));
+
       router.push("/analysis");
-    }, 4000); 
+
+    } catch (error) {
+      console.error("Extraction Failed:", error);
+      alert("Failed to parse resume. Ensure your FastAPI server is running.");
+      setUploadState("idle");
+    }
   };
 
   return (
@@ -76,8 +104,13 @@ export default function Home() {
           }
         `}
       >
-        <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept="application/pdf" className="hidden" />
-
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          onChange={handleFileSelect} 
+          accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" 
+          className="hidden" 
+        />
         <div className="flex flex-col items-center justify-center z-10">
           {uploadState === "idle" && !file && (
             <>
@@ -85,7 +118,7 @@ export default function Home() {
                 <UploadCloud size={32} className={`text-[var(--text-secondary)] transition-colors ${isDragging ? "text-[var(--accent-color)]" : ""}`} />
               </div>
               <p className="font-bold text-[var(--text-primary)]">Select a file, drop it, or paste it</p>
-              <p className="text-sm text-[var(--text-secondary)] mt-1">PDF format only</p>
+              <p className="text-sm text-[var(--text-secondary)] mt-1">PDF, DOC, and DOCX format only</p>
             </>
           )}
 
