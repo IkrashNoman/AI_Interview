@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--bg-color);
+  --color-surface: var(--surface-color);
+  --color-surface-card: var(--surface-card-color);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-inverse: var(--text-inverse);
+  --color-accent: var(--accent-color);
+  --color-custom-border: var(--border-color);
+}
+
+:root {
+  --bg-color: #f7f7f7;
+  --surface-color: #222831;
+  --surface-card-color: #eeeeee;
+  --text-primary: #393e46;
+  --text-secondary: #929aab;
+  --text-inverse: #eeeeee;
+  --accent-color: #f6850c;
+  --border-color: #929aab;
+}
+
+.dark {
+  --bg-color: #222831;
+  --surface-color: #393e46;
+  --surface-card-color: #1e222b;
+  --text-primary: #f7f7f7;
+  --text-secondary: #929aab;
+  --text-inverse: #eeeeee;
+  --accent-color: #f6850c;
+  --border-color: #393e46;
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    transition-property: color, background-color;
+    transition-duration: 200ms;
+  }
+}
