@@ -1,8 +1,5 @@
 from fastapi import APIRouter, HTTPException
 from app.schemas.matcher import MatchRequest
-
-# Import your existing service function AND your new suggestion function
-# (Ensure you actually created 'generate_job_suggestions' in matching_client.py)
 from app.services.matching_client import analyze_fit, generate_job_suggestions
 
 router = APIRouter()

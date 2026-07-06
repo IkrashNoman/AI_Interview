@@ -404,7 +404,7 @@ export default function AnalysisPage() {
                 </div>
 
                 <div>
-                  <h4 className="font-bold text-[var(--text-primary)] mb-2 uppercase text-xs tracking-wider">Experience Gap</h4>
+                  <h4 className="font-bold text-[var(--text-primary)] mb-2 uppercase text-xs tracking-wider">Experience Level</h4>
                   <p className="text-sm text-[var(--text-secondary)] bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50">
                     {matchData.experience_gap}
                   </p>
