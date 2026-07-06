@@ -2,9 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2, Loader2, CheckCircle, AlertTriangle, Briefcase, GitBranch, Link as LinkIcon, X, PlayCircle, MapPin, Globe } from "lucide-react";
+import { Plus, Trash2, Loader2, CheckCircle, AlertTriangle, Briefcase, GitBranch, Link as LinkIcon, X, PlayCircle, MapPin, Globe, Download, ListTree } from "lucide-react";
 import { apiClient } from "../lib/api";
-
 
 // --- Strict State Interfaces Mapping to Pydantic ---
 interface Education { id: string; institution: string; degree: string; start_year: string; end_year: string; }
@@ -37,6 +36,10 @@ export default function AnalysisPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [matchData, setMatchData] = useState<any>(null);
   const [suggestionData, setSuggestionData] = useState<any[]>([]);
+  
+  // --- Roadmap State ---
+  const [roadmapData, setRoadmapData] = useState<any>(null);
+  const [isGeneratingRoadmap, setIsGeneratingRoadmap] = useState(false);
 
   // --- Array Helpers ---
   const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -99,38 +102,28 @@ export default function AnalysisPage() {
     }
   }, []);
 
-  // --- Execution Logic (Strict Pydantic Mapping) ---
+  // --- Execution Logic: Core Matching ---
   const runAnalysis = async () => {
     setStatus("analyzing");
     setErrorMessage("");
+    setRoadmapData(null); // Reset roadmap on new analysis
 
     const payload = {
       resume_data: {
         personal_info: { 
-          name: personalInfo.name || null, 
-          email: personalInfo.email || null, 
-          phone: personalInfo.phone || null, 
-          linkedin: personalInfo.linkedin || null, 
-          github: personalInfo.github || null,
-          portfolio: personalInfo.portfolio || null,
-          location: personalInfo.location || null,
-          other_links: personalInfo.other_links ? personalInfo.other_links.split(",").map(s => s.trim()).filter(s => s) : []
+          name: personalInfo.name || null, email: personalInfo.email || null, phone: personalInfo.phone || null, 
+          linkedin: personalInfo.linkedin || null, github: personalInfo.github || null, portfolio: personalInfo.portfolio || null,
+          location: personalInfo.location || null, other_links: personalInfo.other_links ? personalInfo.other_links.split(",").map(s => s.trim()).filter(s => s) : []
         },
         career_objective: personalInfo.career_objective || null,
         skills: skills.filter(s => s.trim() !== ""),
-        education: educations.map(({ id, ...rest }) => rest), // Strip React IDs before sending
+        education: educations.map(({ id, ...rest }) => rest), 
         experience: experiences.map(exp => ({
-          company: exp.company || null,
-          job_title: exp.job_title || null,
-          start_date: exp.start_date || null,
-          end_date: exp.end_date || null,
-          description: exp.description || null,
-          skills_utilized: typeof exp.skills_utilized === 'string' ? exp.skills_utilized.split(",").map(s => s.trim()).filter(s => s) : exp.skills_utilized
+          company: exp.company || null, job_title: exp.job_title || null, start_date: exp.start_date || null, end_date: exp.end_date || null,
+          description: exp.description || null, skills_utilized: typeof exp.skills_utilized === 'string' ? exp.skills_utilized.split(",").map(s => s.trim()).filter(s => s) : exp.skills_utilized
         })),
         projects: projects.map(proj => ({
-          title: proj.title || null,
-          description: proj.description || null,
-          project_link: proj.project_link || null,
+          title: proj.title || null, description: proj.description || null, project_link: proj.project_link || null,
           technologies_used: typeof proj.technologies_used === 'string' ? proj.technologies_used.split(",").map(s => s.trim()).filter(s => s) : proj.technologies_used
         })),
         languages: languages.map(({ id, ...rest }) => rest)
@@ -155,6 +148,26 @@ export default function AnalysisPage() {
     }
   };
 
+  // --- Execution Logic: Roadmap Generation ---
+  const generateRoadmap = async () => {
+    setIsGeneratingRoadmap(true);
+    try {
+      const payload = {
+        missing_skills: matchData.missing_skills || [],
+        experience_gap: matchData.experience_gap || "N/A",
+        job_description_text: jobDescription
+      };
+      
+      const response = await apiClient.post("/api/v1/matcher/roadmap", payload);
+      setRoadmapData(response.data);
+    } catch (error: any) {
+      console.error("Roadmap generation failed:", error);
+      alert("Failed to generate the execution roadmap.");
+    } finally {
+      setIsGeneratingRoadmap(false);
+    }
+  };
+
   const handleInterviewLaunch = (jobId: string) => {
     if (!isUserLoggedIn) {
       setShowAuthModal(true);
@@ -163,12 +176,16 @@ export default function AnalysisPage() {
     router.push(`/interview/${jobId}`);
   };
 
+  const saveAsPDF = () => {
+    window.print();
+  };
+
   return (
-    <div className="max-w-[1500px] mx-auto px-4 py-8 h-[calc(100vh-80px)] relative">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full">
+    <div className="max-w-[1500px] mx-auto px-4 py-8 h-[calc(100vh-80px)] relative print:p-0 print:h-auto">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full print:grid-cols-1 print:block">
         
-        {/* ================= LEFT COLUMN: DATA VERIFICATION FORM ================= */}
-        <div className="flex flex-col h-full overflow-y-auto pr-4 border-r border-[var(--border-color)]/30 custom-scrollbar pb-12">
+        {/* ================= LEFT COLUMN: DATA VERIFICATION FORM (HIDDEN ON PRINT) ================= */}
+        <div className="flex flex-col h-full overflow-y-auto pr-4 border-r border-[var(--border-color)]/30 custom-scrollbar pb-12 print:hidden">
           
           <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-xl p-6 mb-6">
             <h2 className="text-xl font-black mb-4 text-[var(--text-primary)] border-b border-[var(--border-color)] pb-2">Section 1: Personal Info</h2>
@@ -322,7 +339,7 @@ export default function AnalysisPage() {
           <button 
             onClick={runAnalysis}
             disabled={status === "analyzing"}
-            className="w-full py-4 bg-[var(--accent-color)] text-[var(--bg-color)] font-black text-lg rounded-xl hover:opacity-90 transition-all uppercase tracking-wide disabled:opacity-50 flex justify-center items-center gap-2 shadow-lg"
+            className="w-full py-4 bg-[var(--accent-color)] text-[var(--bg-color)] font-black text-lg rounded-xl hover:opacity-90 transition-all uppercase tracking-wide disabled:opacity-50 flex justify-center items-center gap-2 shadow-lg mb-6"
           >
             {status === "analyzing" ? (
               <><Loader2 className="animate-spin" size={24} /> Processing Data...</>
@@ -331,11 +348,11 @@ export default function AnalysisPage() {
         </div>
 
 
-        {/* ================= RIGHT COLUMN: READ-ONLY ANALYSIS ================= */}
-        <div className="flex flex-col h-full bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-2xl overflow-hidden shadow-inner sticky top-24">
+        {/* ================= RIGHT COLUMN: READ-ONLY ANALYSIS (EXPANDS ON PRINT) ================= */}
+        <div className="flex flex-col h-full bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-2xl overflow-hidden shadow-inner sticky top-24 print:static print:border-none print:shadow-none print:overflow-visible">
           
           {status === "idle" && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+            <div className="flex flex-col items-center justify-center h-full p-8 text-center print:hidden">
               <Briefcase size={64} className="text-[var(--border-color)] mb-4 opacity-50" />
               <h3 className="text-2xl font-black text-[var(--text-primary)]">Awaiting Analysis</h3>
               <p className="text-[var(--text-secondary)] mt-2">Verify your parsed data on the left and click analyze to generate your results.</p>
@@ -343,7 +360,7 @@ export default function AnalysisPage() {
           )}
 
           {status === "analyzing" && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-[var(--bg-color)]/50">
+            <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-[var(--bg-color)]/50 print:hidden">
               <div className="relative w-24 h-24 mb-6">
                 <div className="absolute inset-0 border-4 border-[var(--border-color)] rounded-full"></div>
                 <div className="absolute inset-0 border-4 border-[var(--accent-color)] rounded-full border-t-transparent animate-spin"></div>
@@ -357,7 +374,7 @@ export default function AnalysisPage() {
           )}
 
           {status === "error" && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+            <div className="flex flex-col items-center justify-center h-full p-8 text-center print:hidden">
               <AlertTriangle size={64} className="text-red-500 mb-4" />
               <h3 className="text-2xl font-black text-red-500">Analysis Failed</h3>
               <p className="text-[var(--text-secondary)] mt-2">{errorMessage}</p>
@@ -366,17 +383,26 @@ export default function AnalysisPage() {
 
           {/* DYNAMIC MATCH RENDERING */}
           {status === "complete_with_jd" && matchData && (
-            <div className="flex flex-col h-full overflow-y-auto p-8 custom-scrollbar">
+            <div className="flex flex-col h-full overflow-y-auto p-8 custom-scrollbar print:overflow-visible print:p-0">
+              
               <div className="flex justify-between items-start mb-8 pb-6 border-b border-[var(--border-color)]">
                 <div>
                   <h2 className="text-3xl font-black text-[var(--text-primary)]">Analysis Results</h2>
-                  <p className="text-[var(--text-secondary)]">Targeted Evaluation</p>
+                  <p className="text-[var(--text-secondary)]">Targeted Evaluation for {personalInfo.name || "Candidate"}</p>
                 </div>
-                <div className="flex flex-col items-end">
-                  <span className="text-sm font-bold uppercase tracking-wider text-[var(--text-secondary)] mb-1">Match Score</span>
-                  <div className={`text-5xl font-black ${matchData.match_percentage >= 75 ? 'text-green-500' : 'text-[var(--accent-color)]'}`}>
-                    {matchData.match_percentage}%
+                <div className="flex flex-col items-end gap-2">
+                  <div className="flex flex-col items-end">
+                    <span className="text-sm font-bold uppercase tracking-wider text-[var(--text-secondary)] mb-1">Match Score</span>
+                    <div className={`text-5xl font-black ${matchData.match_percentage >= 75 ? 'text-green-500' : 'text-[var(--accent-color)]'}`}>
+                      {matchData.match_percentage}%
+                    </div>
                   </div>
+                  <button 
+                    onClick={saveAsPDF} 
+                    className="flex items-center gap-1 text-xs font-bold px-3 py-2 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-md hover:bg-[var(--border-color)]/20 transition-colors print:hidden"
+                  >
+                    <Download size={14} /> Save as PDF
+                  </button>
                 </div>
               </div>
 
@@ -414,12 +440,61 @@ export default function AnalysisPage() {
                   <h4 className="font-bold text-[var(--text-primary)] mb-2 uppercase text-xs tracking-wider">Actionable Advice</h4>
                   <div className="bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50 border-l-4 border-l-[var(--accent-color)]">
                     <p className="text-sm text-[var(--text-secondary)] mb-2"><strong className="text-[var(--text-primary)]">Critical Priority:</strong> {matchData.critical_advice}</p>
-                    <p className="text-sm text-[var(--text-secondary)]"><strong className="text-[var(--text-primary)]">Project Roadmap:</strong> {matchData.project_advice}</p>
+                    <p className="text-sm text-[var(--text-secondary)]"><strong className="text-[var(--text-primary)]">Project Directive:</strong> {matchData.project_advice}</p>
                   </div>
+                </div>
+                
+                {/* --- ROADMAP INJECTION SECTION --- */}
+                <div className="mt-8 pt-6 border-t border-[var(--border-color)]">
+                  {!roadmapData ? (
+                    <div className="flex flex-col items-center bg-[var(--bg-color)] p-6 rounded-xl border border-[var(--border-color)]/50 text-center print:hidden">
+                      <ListTree size={32} className="text-[var(--accent-color)] mb-3" />
+                      <h4 className="font-bold text-[var(--text-primary)] mb-2">Execution Roadmap</h4>
+                      <p className="text-sm text-[var(--text-secondary)] mb-4">Generate a week-by-week technical blueprint to build the required skills.</p>
+                      <button 
+                        onClick={generateRoadmap}
+                        disabled={isGeneratingRoadmap}
+                        className="px-6 py-3 bg-[var(--text-primary)] text-[var(--bg-color)] font-bold text-sm rounded-lg hover:opacity-90 transition-all disabled:opacity-50 flex items-center gap-2"
+                      >
+                        {isGeneratingRoadmap ? <><Loader2 className="animate-spin" size={16} /> Architecting Plan...</> : "Generate Execution Roadmap"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col">
+                      <div className="mb-6">
+                        <h3 className="text-2xl font-black text-[var(--text-primary)] mb-2">{roadmapData.project_title}</h3>
+                        <p className="text-sm text-[var(--text-secondary)] mb-4 italic">{roadmapData.problem_statement}</p>
+                        <div className="flex flex-wrap gap-2 mb-4">
+                          {roadmapData.tech_stack.map((tech: string, i: number) => (
+                            <span key={i} className="px-2 py-1 bg-[var(--accent-color)]/10 text-[var(--accent-color)] text-xs font-bold rounded-md border border-[var(--accent-color)]/30">
+                              {tech}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-sm text-[var(--text-primary)] bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50">
+                          <strong>Why build this:</strong> {roadmapData.why_this_project_works}
+                        </p>
+                      </div>
+
+                      <div className="relative border-l-2 border-[var(--border-color)] ml-3 space-y-8 mt-4">
+                        {roadmapData.milestones.map((milestone: any, i: number) => (
+                          <div key={i} className="relative pl-6">
+                            <div className="absolute -left-[9px] top-1 w-4 h-4 bg-[var(--bg-color)] border-2 border-[var(--accent-color)] rounded-full"></div>
+                            <h4 className="font-bold text-[var(--text-primary)] text-md">Week {milestone.week_number}: {milestone.title}</h4>
+                            <p className="text-sm text-[var(--text-secondary)] mt-1 mb-2">{milestone.technical_objective}</p>
+                            <div className="bg-[var(--bg-color)] p-3 rounded-md border border-[var(--border-color)]/50">
+                              <p className="text-xs text-[var(--text-primary)]"><strong>Deliverable:</strong> {milestone.key_deliverable}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="mt-8 pt-6 border-t border-[var(--border-color)]">
+              {/* Bottom CTA */}
+              <div className="mt-8 pt-6 border-t border-[var(--border-color)] print:hidden">
                 {matchData.match_percentage >= 75 ? (
                   <div className="flex flex-col items-center text-center">
                     <div className="flex items-center gap-2 mb-2">
@@ -437,8 +512,8 @@ export default function AnalysisPage() {
                       <AlertTriangle size={24} className="text-red-500" />
                       <h3 className="text-xl font-black text-[var(--text-primary)]">Critical Mismatch</h3>
                     </div>
-                    <p className="text-[var(--text-primary)] font-bold text-sm mb-1">You are not fit for this job.</p>
-                    <p className="text-sm text-[var(--text-secondary)] mb-6">Apply somewhere else, or complete the execution roadmap above to be prepared before applying.</p>
+                    <p className="text-[var(--text-primary)] font-bold text-sm mb-1">You are not an immediate fit for this job.</p>
+                    <p className="text-sm text-[var(--text-secondary)] mb-6">Complete the execution roadmap above to bridge your skill gap before applying.</p>
                   </div>
                 )}
               </div>
@@ -447,27 +522,36 @@ export default function AnalysisPage() {
 
           {/* DYNAMIC SUGGESTIONS RENDERING */}
           {status === "complete_without_jd" && suggestionData && (
-            <div className="flex flex-col h-full overflow-y-auto p-8 custom-scrollbar">
-              <div className="mb-6 pb-6 border-b border-[var(--border-color)]">
-                <h2 className="text-3xl font-black text-[var(--text-primary)]">Profile Analysis</h2>
-                <p className="text-[var(--text-secondary)] mt-2">Based on your extracted skills and experience, you are highly competitive for the following roles in the market.</p>
+            <div className="flex flex-col h-full overflow-y-auto p-8 custom-scrollbar print:overflow-visible print:p-0">
+              <div className="flex justify-between items-start mb-6 pb-6 border-b border-[var(--border-color)]">
+                <div>
+                  <h2 className="text-3xl font-black text-[var(--text-primary)]">Profile Analysis</h2>
+                  <p className="text-[var(--text-secondary)] mt-2">Competitive market roles based on your extracted skills.</p>
+                </div>
+                <button 
+                  onClick={saveAsPDF} 
+                  className="flex items-center gap-1 text-xs font-bold px-3 py-2 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-md hover:bg-[var(--border-color)]/20 transition-colors print:hidden"
+                >
+                  <Download size={14} /> Save as PDF
+                </button>
               </div>
 
               <div className="space-y-4">
                 {suggestionData.map((job: any, index: number) => (
-                  <button 
+                  <div 
                     key={index}
-                    onClick={() => handleInterviewLaunch(`suggested-role-${index}`)}
-                    className="w-full text-left p-5 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl hover:border-[var(--accent-color)] hover:shadow-md transition-all group"
+                    className="w-full text-left p-5 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl"
                   >
                     <div className="flex justify-between items-center mb-2">
-                      <h4 className="font-black text-lg text-[var(--text-primary)] group-hover:text-[var(--accent-color)] transition-colors">{index + 1}. {job.title}</h4>
-                      <PlayCircle size={20} className="text-[var(--text-secondary)] group-hover:text-[var(--accent-color)] transition-colors" />
+                      <h4 className="font-black text-lg text-[var(--text-primary)]">{index + 1}. {job.title}</h4>
+                      <button onClick={() => handleInterviewLaunch(`suggested-role-${index}`)} className="text-[var(--text-secondary)] hover:text-[var(--accent-color)] transition-colors print:hidden">
+                        <PlayCircle size={20} />
+                      </button>
                     </div>
                     <p className="text-xs text-[var(--text-secondary)] mb-2"><strong className="text-[var(--text-primary)]">Role:</strong> {job.description}</p>
                     <p className="text-xs text-[var(--text-secondary)] mb-2"><strong className="text-green-500">Alignment:</strong> {job.strengths_alignment}</p>
                     <p className="text-xs text-[var(--text-secondary)]"><strong className="text-red-500">Gap:</strong> {job.current_limitations}</p>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -477,7 +561,7 @@ export default function AnalysisPage() {
       </div>
 
       {showAuthModal && (
-        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 px-4 rounded-xl">
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 px-4 rounded-xl print:hidden">
           <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-2xl p-8 max-w-md w-full shadow-2xl">
             <h2 className="text-2xl font-black mb-2 text-[var(--text-primary)]">Authentication Required</h2>
             <p className="text-[var(--text-secondary)] mb-6">
@@ -498,7 +582,6 @@ export default function AnalysisPage() {
           </div>
         </div>
       )}
-
     </div>
   );
 }

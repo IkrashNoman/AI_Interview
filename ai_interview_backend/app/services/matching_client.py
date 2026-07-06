@@ -4,7 +4,8 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 from app.core.config import settings
-from app.schemas.matcher import MatchAnalysisResponse, JobSuggestionResponse, LLMMatchAnalysisInput
+import re
+from app.schemas.matcher import MatchAnalysisResponse, JobSuggestionResponse, LLMMatchAnalysisInput, ProjectRoadmapResponse, RoadmapRequest
 
 def calculate_cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     """Calculates the cosine similarity between two vectors."""
@@ -144,6 +145,11 @@ def analyze_fit(resume_data: dict, jd_text: str) -> MatchAnalysisResponse:
                 temperature=0.0, # 0.0 forces maximum determinism
             )
         )
+        raw_text = response.text
+        
+        # BRUTAL FIX: Strip hallucinated markdown code blocks from the LLM
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```json\s*|```$", "", raw_text.strip(), flags=re.MULTILINE)
         
         llm_data = json.loads(response.text)
         
@@ -198,3 +204,42 @@ def generate_job_suggestions(resume_data: dict) -> JobSuggestionResponse:
         return JobSuggestionResponse.model_validate_json(response.text)
     except Exception as e:
         raise RuntimeError(f"LLM job suggestion failed: {str(e)}")
+    
+def generate_project_roadmap(request: RoadmapRequest) -> ProjectRoadmapResponse:
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    
+    # Dynamic context injection: Adapt to both weak and 100% matched candidates
+    if not request.missing_skills:
+        gap_context = "This candidate is a 100% match. Generate an advanced mastery or high-level system design project to ensure they crush the technical interview."
+    else:
+        gap_context = f"The candidate is missing these specific skills: {', '.join(request.missing_skills)}. They also have this experience gap: {request.experience_gap}."
+
+    prompt = f"""
+    You are a ruthless, elite Staff Engineer mentoring a candidate.
+    Based on their specific profile and the target Job Description, output a highly technical, week-by-week execution roadmap to build a portfolio-ready project.
+    
+    Context:
+    {gap_context}
+    
+    Job Description Context:
+    {request.job_description_text}
+    
+    Rules:
+    1. Strip all motivational fluff. Output pure engineering directives.
+    2. The timeline must be realistic for a single developer (e.g., 3 to 6 weeks).
+    3. Each week must have a concrete, verifiable deliverable (e.g., "Deployed Docker image to AWS", NOT "Learned about containers").
+    """
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=ProjectRoadmapResponse,
+                temperature=0.2, # Keep the variance low for technical roadmaps
+            )
+        )
+        return ProjectRoadmapResponse.model_validate_json(response.text)
+    except Exception as e:
+        raise RuntimeError(f"LLM roadmap generation failed: {str(e)}")

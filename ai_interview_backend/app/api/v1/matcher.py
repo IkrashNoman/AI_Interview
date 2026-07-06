@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from app.schemas.matcher import MatchRequest
-from app.services.matching_client import analyze_fit, generate_job_suggestions
+from app.schemas.matcher import MatchRequest, ProjectRoadmapResponse, RoadmapRequest
+from app.services.matching_client import analyze_fit, generate_job_suggestions, generate_project_roadmap
 
 router = APIRouter()
 
@@ -28,3 +28,11 @@ async def match_resume_to_jd(request: MatchRequest):
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred during the matching process: {str(e)}")
+    
+@router.post("/roadmap", response_model=ProjectRoadmapResponse)
+async def create_roadmap(request: RoadmapRequest):
+    try:
+        roadmap = generate_project_roadmap(request)
+        return roadmap
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
