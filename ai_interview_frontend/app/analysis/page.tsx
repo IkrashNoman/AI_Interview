@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2, Loader2, CheckCircle, AlertTriangle, Briefcase, GitBranch, Link as LinkIcon, X, PlayCircle, MapPin, Globe, Download, ListTree } from "lucide-react";
-import { apiClient } from "../lib/api";
+import { apiClient } from "../lib/api"; 
+import { toast, ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 // --- Strict State Interfaces Mapping to Pydantic ---
 interface Education { id: string; institution: string; degree: string; start_year: string; end_year: string; }
@@ -28,7 +30,6 @@ export default function AnalysisPage() {
   const [languages, setLanguages] = useState<Language[]>([{ id: "1", language: "", proficiency: "" }]);
   const [skills, setSkills] = useState<string[]>([""]);
   
-  // --- Job Description ---
   const [jobDescription, setJobDescription] = useState("");
 
   // --- API Response State ---
@@ -37,9 +38,15 @@ export default function AnalysisPage() {
   const [matchData, setMatchData] = useState<any>(null);
   const [suggestionData, setSuggestionData] = useState<any[]>([]);
   
-  // --- Roadmap State ---
   const [roadmapData, setRoadmapData] = useState<any>(null);
   const [isGeneratingRoadmap, setIsGeneratingRoadmap] = useState(false);
+
+  // --- UI Layout & Drag State (Strictly Mobile) ---
+  const [isMobile, setIsMobile] = useState(false);
+  const [drawerHeight, setDrawerHeight] = useState(50);
+  const [isDragging, setIsDragging] = useState(false);
+  const startY = useRef(0);
+  const startHeight = useRef(50);
 
   // --- Array Helpers ---
   const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -64,7 +71,14 @@ export default function AnalysisPage() {
   const updateSkill = (index: number, value: string) => { const newSkills = [...skills]; newSkills[index] = value; setSkills(newSkills); };
   const removeSkill = (index: number) => skills.length > 1 && setSkills(skills.filter((_, i) => i !== index));
 
-  // --- Hydration from Session Storage ---
+  // Ensure window width check only runs on client to prevent SSR hydration mismatch
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 1024);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   useEffect(() => {
     const savedData = sessionStorage.getItem("extractedResume");
     if (savedData) {
@@ -72,41 +86,27 @@ export default function AnalysisPage() {
         const parsed = JSON.parse(savedData);
         if (parsed.personal_info) {
           setPersonalInfo(prev => ({ 
-            ...prev, 
-            ...parsed.personal_info,
+            ...prev, ...parsed.personal_info,
             other_links: Array.isArray(parsed.personal_info.other_links) ? parsed.personal_info.other_links.join(", ") : parsed.personal_info.other_links || ""
           }));
         }
         if (parsed.career_objective) setPersonalInfo(prev => ({ ...prev, career_objective: parsed.career_objective }));
         if (parsed.skills && Array.isArray(parsed.skills)) setSkills(parsed.skills);
-        
-        if (parsed.education && Array.isArray(parsed.education) && parsed.education.length > 0) {
-          setEducations(parsed.education.map((e: any) => ({ ...e, id: generateId() })));
-        }
-        if (parsed.experience && Array.isArray(parsed.experience) && parsed.experience.length > 0) {
-          setExperiences(parsed.experience.map((e: any) => ({ 
-            ...e, id: generateId(), skills_utilized: Array.isArray(e.skills_utilized) ? e.skills_utilized.join(", ") : e.skills_utilized || ""
-          })));
-        }
-        if (parsed.projects && Array.isArray(parsed.projects) && parsed.projects.length > 0) {
-          setProjects(parsed.projects.map((p: any) => ({ 
-            ...p, id: generateId(), technologies_used: Array.isArray(p.technologies_used) ? p.technologies_used.join(", ") : p.technologies_used || ""
-          })));
-        }
-        if (parsed.languages && Array.isArray(parsed.languages) && parsed.languages.length > 0) {
-          setLanguages(parsed.languages.map((l: any) => ({ ...l, id: generateId() })));
-        }
+        if (parsed.education && Array.isArray(parsed.education) && parsed.education.length > 0) setEducations(parsed.education.map((e: any) => ({ ...e, id: generateId() })));
+        if (parsed.experience && Array.isArray(parsed.experience) && parsed.experience.length > 0) setExperiences(parsed.experience.map((e: any) => ({ ...e, id: generateId(), skills_utilized: Array.isArray(e.skills_utilized) ? e.skills_utilized.join(", ") : e.skills_utilized || "" })));
+        if (parsed.projects && Array.isArray(parsed.projects) && parsed.projects.length > 0) setProjects(parsed.projects.map((p: any) => ({ ...p, id: generateId(), technologies_used: Array.isArray(p.technologies_used) ? p.technologies_used.join(", ") : p.technologies_used || "" })));
+        if (parsed.languages && Array.isArray(parsed.languages) && parsed.languages.length > 0) setLanguages(parsed.languages.map((l: any) => ({ ...l, id: generateId() })));
       } catch (e) {
         console.error("Failed to parse extracted data.");
       }
     }
   }, []);
 
-  // --- Execution Logic: Core Matching ---
   const runAnalysis = async () => {
     setStatus("analyzing");
     setErrorMessage("");
-    setRoadmapData(null); // Reset roadmap on new analysis
+    setRoadmapData(null); 
+    setDrawerHeight(50); // reset mobile drawer
 
     const payload = {
       resume_data: {
@@ -133,7 +133,6 @@ export default function AnalysisPage() {
 
     try {
       const response = await apiClient.post("/api/v1/matcher/match/", payload);
-      
       if (response.data.type === "targeted_match") {
         setMatchData(response.data.data);
         setStatus("complete_with_jd");
@@ -148,7 +147,6 @@ export default function AnalysisPage() {
     }
   };
 
-  // --- Execution Logic: Roadmap Generation ---
   const generateRoadmap = async () => {
     setIsGeneratingRoadmap(true);
     try {
@@ -157,12 +155,11 @@ export default function AnalysisPage() {
         experience_gap: matchData.experience_gap || "N/A",
         job_description_text: jobDescription
       };
-      
       const response = await apiClient.post("/api/v1/matcher/roadmap", payload);
       setRoadmapData(response.data);
     } catch (error: any) {
       console.error("Roadmap generation failed:", error);
-      alert("Failed to generate the execution roadmap.");
+      toast.error("Failed to generate the execution roadmap. Please try again later.");
     } finally {
       setIsGeneratingRoadmap(false);
     }
@@ -176,51 +173,79 @@ export default function AnalysisPage() {
     router.push(`/interview/${jobId}`);
   };
 
-  const saveAsPDF = () => {
-    window.print();
+  // --- Touch/Mouse Drag Logic for Mobile Bottom Sheet ---
+  const handleDragStart = (e: React.TouchEvent | React.MouseEvent) => {
+    if (!isMobile) return;
+    setIsDragging(true);
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    startY.current = clientY;
+    startHeight.current = drawerHeight;
   };
+
+  const handleDragMove = (e: React.TouchEvent | React.MouseEvent) => {
+    if (!isDragging || !isMobile) return;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const deltaY = startY.current - clientY;
+    const windowHeight = window.innerHeight;
+    const deltaPercentage = (deltaY / windowHeight) * 100;
+    
+    let newHeight = startHeight.current + deltaPercentage;
+    if (newHeight > 90) newHeight = 90; 
+    if (newHeight < 10) newHeight = 10; 
+    
+    setDrawerHeight(newHeight);
+  };
+
+  const handleDragEnd = () => {
+    if (!isMobile) return;
+    setIsDragging(false);
+    if (drawerHeight > 70) setDrawerHeight(90);
+    else if (drawerHeight < 30) setDrawerHeight(10);
+    else setDrawerHeight(50);
+  };
+
+  useEffect(() => {
+    if (isDragging) {
+      window.addEventListener('mousemove', handleDragMove as any);
+      window.addEventListener('mouseup', handleDragEnd);
+      window.addEventListener('touchmove', handleDragMove as any);
+      window.addEventListener('touchend', handleDragEnd);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleDragMove as any);
+      window.removeEventListener('mouseup', handleDragEnd);
+      window.removeEventListener('touchmove', handleDragMove as any);
+      window.removeEventListener('touchend', handleDragEnd);
+    };
+  }, [isDragging, drawerHeight, isMobile]);
 
   return (
     <div className="max-w-[1500px] mx-auto px-4 py-8 h-[calc(100vh-80px)] relative print:p-0 print:h-auto">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full print:grid-cols-1 print:block">
         
-        {/* ================= LEFT COLUMN: DATA VERIFICATION FORM (HIDDEN ON PRINT) ================= */}
-        <div className="flex flex-col h-full overflow-y-auto pr-4 border-r border-[var(--border-color)]/30 custom-scrollbar pb-12 print:hidden">
-          
+        {/* ================= LEFT COLUMN ================= */}
+        <div className="flex flex-col h-full overflow-y-auto pr-4 border-r border-[var(--border-color)]/30 custom-scrollbar pb-32 lg:pb-12 print:hidden">
           <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-xl p-6 mb-6">
             <h2 className="text-xl font-black mb-4 text-[var(--text-primary)] border-b border-[var(--border-color)] pb-2">Section 1: Personal Info</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <input type="text" value={personalInfo.name || ""} onChange={e => setPersonalInfo({...personalInfo, name: e.target.value})} placeholder="Full Name" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
-              
               <div className="flex bg-[var(--bg-color)] border border-[var(--border-color)] rounded-lg overflow-hidden focus-within:border-[var(--accent-color)]">
                 <span className="flex items-center justify-center px-3 bg-[var(--border-color)]/20 text-lg" title="Pakistan">🇵🇰</span>
                 <input type="tel" value={personalInfo.phone || ""} onChange={e => setPersonalInfo({...personalInfo, phone: e.target.value})} placeholder="Phone Number" className="w-full bg-transparent p-3 text-sm outline-none" />
               </div>
-              
               <input type="email" value={personalInfo.email || ""} onChange={e => setPersonalInfo({...personalInfo, email: e.target.value})} placeholder="Email Address" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
-              
               <div className="relative">
                 <MapPin size={16} className="absolute left-3 top-3.5 text-[var(--text-secondary)]" />
                 <input type="text" value={personalInfo.location || ""} onChange={e => setPersonalInfo({...personalInfo, location: e.target.value})} placeholder="Location (City, Country)" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 pl-10 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
               </div>
-
               <div className="relative">
                 <LinkIcon size={16} className="absolute left-3 top-3.5 text-[var(--text-secondary)]" />
                 <input type="url" value={personalInfo.linkedin || ""} onChange={e => setPersonalInfo({...personalInfo, linkedin: e.target.value})} placeholder="LinkedIn URL" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 pl-10 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
               </div>
-              
               <div className="relative">
                 <GitBranch size={16} className="absolute left-3 top-3.5 text-[var(--text-secondary)]" />
                 <input type="url" value={personalInfo.github || ""} onChange={e => setPersonalInfo({...personalInfo, github: e.target.value})} placeholder="GitHub URL" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 pl-10 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
               </div>
-
-              <div className="relative">
-                <Globe size={16} className="absolute left-3 top-3.5 text-[var(--text-secondary)]" />
-                <input type="url" value={personalInfo.portfolio || ""} onChange={e => setPersonalInfo({...personalInfo, portfolio: e.target.value})} placeholder="Portfolio Website URL" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 pl-10 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
-              </div>
-
-              <input type="text" value={personalInfo.other_links || ""} onChange={e => setPersonalInfo({...personalInfo, other_links: e.target.value})} placeholder="Other Links (comma separated)" className="w-full bg-[var(--bg-color)] border border-[var(--border-color)] p-3 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none" />
-
               <textarea value={personalInfo.career_objective || ""} onChange={e => setPersonalInfo({...personalInfo, career_objective: e.target.value})} placeholder="Career Objective" className="w-full md:col-span-2 h-24 bg-[var(--bg-color)] border border-[var(--border-color)] p-3 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none resize-none" />
             </div>
           </div>
@@ -331,8 +356,8 @@ export default function AnalysisPage() {
           </div>
 
           <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-xl p-6 mb-6 shadow-md border-t-4 border-t-[var(--accent-color)]">
-            <h2 className="text-xl font-black mb-2 text-[var(--text-primary)]">Section 7: Add Job Description (Optional)</h2>
-            <p className="text-sm text-[var(--text-secondary)] mb-4">Paste the target JD to get a targeted matching score and execution roadmap. Leave blank for general role suggestions.</p>
+            <h2 className="text-xl font-black mb-2 text-[var(--text-primary)]">Section 7: Target Job Description (Optional)</h2>
+            <p className="text-sm text-[var(--text-secondary)] mb-4">Paste the target JD to get a targeted matching score and execution roadmap.</p>
             <textarea value={jobDescription} onChange={(e) => setJobDescription(e.target.value)} placeholder="Paste Job Description here..." className="w-full h-40 bg-[var(--bg-color)] border border-[var(--border-color)] p-4 rounded-lg text-sm focus:border-[var(--accent-color)] outline-none resize-none" />
           </div>
 
@@ -348,65 +373,82 @@ export default function AnalysisPage() {
         </div>
 
 
-        {/* ================= RIGHT COLUMN: READ-ONLY ANALYSIS (EXPANDS ON PRINT) ================= */}
-        <div className="flex flex-col h-full bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-2xl overflow-hidden shadow-inner sticky top-24 print:static print:border-none print:shadow-none print:overflow-visible">
-          
-          {status === "idle" && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center print:hidden">
-              <Briefcase size={64} className="text-[var(--border-color)] mb-4 opacity-50" />
-              <h3 className="text-2xl font-black text-[var(--text-primary)]">Awaiting Analysis</h3>
-              <p className="text-[var(--text-secondary)] mt-2">Verify your parsed data on the left and click analyze to generate your results.</p>
+        {/* ================= RIGHT COLUMN: ANALYSIS RESULTS ================= */}
+        <div 
+          className={`
+            flex flex-col bg-[var(--surface-card-color)] lg:border border-[var(--border-color)] lg:shadow-inner lg:rounded-2xl overflow-hidden
+            lg:relative lg:h-full lg:transform-none lg:z-auto lg:transition-none
+            ${status === "idle" ? "hidden lg:flex" : "fixed bottom-0 left-0 right-0 z-40 border-t shadow-2xl transition-all duration-300 ease-out lg:flex"}
+            print:static print:border-none print:shadow-none print:overflow-visible print:h-auto print:flex
+          `}
+          style={isMobile && status !== "idle" ? { 
+            height: `${drawerHeight}vh`, 
+            transform: drawerHeight <= 10 ? 'translateY(80%)' : 'none' 
+          } : {}}
+        >
+          {/* Drag Handle for Mobile */}
+          {status !== "idle" && (
+            <div 
+              className="w-full h-8 flex items-center justify-center lg:hidden cursor-grab active:cursor-grabbing bg-[var(--surface-card-color)] border-b border-[var(--border-color)]/30"
+              onMouseDown={handleDragStart}
+              onTouchStart={handleDragStart}
+            >
+              <div className="w-12 h-1.5 bg-[var(--border-color)] rounded-full"></div>
             </div>
           )}
 
-          {status === "analyzing" && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-[var(--bg-color)]/50 print:hidden">
-              <div className="relative w-24 h-24 mb-6">
-                <div className="absolute inset-0 border-4 border-[var(--border-color)] rounded-full"></div>
-                <div className="absolute inset-0 border-4 border-[var(--accent-color)] rounded-full border-t-transparent animate-spin"></div>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Loader2 size={32} className="text-[var(--accent-color)] animate-pulse" />
-                </div>
+          <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar print:overflow-visible print:p-0">
+            
+            {status === "idle" && (
+              <div className="flex flex-col items-center justify-center h-full text-center print:hidden">
+                <Briefcase size={64} className="text-[var(--border-color)] mb-4 opacity-50" />
+                <h3 className="text-2xl font-black text-[var(--text-primary)]">Awaiting Analysis</h3>
+                <p className="text-[var(--text-secondary)] mt-2">Verify your parsed data on the left and click analyze to generate your results.</p>
               </div>
-              <h3 className="text-2xl font-black text-[var(--accent-color)] animate-pulse">Running Neural Match...</h3>
-              <p className="text-[var(--text-secondary)] mt-2">Cross-referencing resume matrix with job requirements.</p>
-            </div>
-          )}
+            )}
 
-          {status === "error" && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center print:hidden">
-              <AlertTriangle size={64} className="text-red-500 mb-4" />
-              <h3 className="text-2xl font-black text-red-500">Analysis Failed</h3>
-              <p className="text-[var(--text-secondary)] mt-2">{errorMessage}</p>
-            </div>
-          )}
-
-          {/* DYNAMIC MATCH RENDERING */}
-          {status === "complete_with_jd" && matchData && (
-            <div className="flex flex-col h-full overflow-y-auto p-8 custom-scrollbar print:overflow-visible print:p-0">
-              
-              <div className="flex justify-between items-start mb-8 pb-6 border-b border-[var(--border-color)]">
-                <div>
-                  <h2 className="text-3xl font-black text-[var(--text-primary)]">Analysis Results</h2>
-                  <p className="text-[var(--text-secondary)]">Targeted Evaluation for {personalInfo.name || "Candidate"}</p>
+            {status === "analyzing" && (
+              <div className="flex flex-col items-center justify-center h-full text-center print:hidden">
+                <div className="relative w-20 h-20 mb-6">
+                  <div className="absolute inset-0 border-4 border-[var(--border-color)] rounded-full"></div>
+                  <div className="absolute inset-0 border-4 border-[var(--accent-color)] rounded-full border-t-transparent animate-spin"></div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Loader2 size={24} className="text-[var(--accent-color)] animate-pulse" />
+                  </div>
                 </div>
-                <div className="flex flex-col items-end gap-2">
-                  <div className="flex flex-col items-end">
-                    <span className="text-sm font-bold uppercase tracking-wider text-[var(--text-secondary)] mb-1">Match Score</span>
-                    <div className={`text-5xl font-black ${matchData.match_percentage >= 75 ? 'text-green-500' : 'text-[var(--accent-color)]'}`}>
-                      {matchData.match_percentage}%
+                <h3 className="text-xl font-black text-[var(--accent-color)] animate-pulse">Running Neural Match...</h3>
+              </div>
+            )}
+
+            {status === "error" && (
+              <div className="flex flex-col items-center justify-center h-full text-center print:hidden">
+                <AlertTriangle size={64} className="text-red-500 mb-4" />
+                <h3 className="text-2xl font-black text-red-500">Analysis Failed</h3>
+                <p className="text-[var(--text-secondary)] mt-2">{errorMessage}</p>
+              </div>
+            )}
+
+            {/* DYNAMIC MATCH RENDERING */}
+            {status === "complete_with_jd" && matchData && (
+              <div className="space-y-6">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 pb-6 border-b border-[var(--border-color)]">
+                  <div>
+                    <h2 className="text-2xl lg:text-3xl font-black text-[var(--text-primary)]">Analysis Results</h2>
+                    <p className="text-[var(--text-secondary)] text-sm mt-1">Targeted Evaluation for {personalInfo.name || "Candidate"}</p>
+                  </div>
+                  <div className="flex flex-row md:flex-col items-center md:items-end gap-4 w-full md:w-auto justify-between md:justify-end">
+                    <button onClick={() => window.print()} className="flex items-center gap-1 text-xs font-bold px-3 py-2 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-md hover:bg-[var(--border-color)]/20 transition-colors print:hidden">
+                      <Download size={14} /> Save PDF
+                    </button>
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-secondary)]">Match Score</span>
+                      <div className={`text-4xl lg:text-5xl font-black ${matchData.match_percentage >= 75 ? 'text-green-500' : 'text-[var(--accent-color)]'}`}>
+                        {matchData.match_percentage}%
+                      </div>
                     </div>
                   </div>
-                  <button 
-                    onClick={saveAsPDF} 
-                    className="flex items-center gap-1 text-xs font-bold px-3 py-2 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-md hover:bg-[var(--border-color)]/20 transition-colors print:hidden"
-                  >
-                    <Download size={14} /> Save as PDF
-                  </button>
                 </div>
-              </div>
 
-              <div className="space-y-6 flex-grow">
                 <div>
                   <h4 className="font-bold text-[var(--text-primary)] mb-2 uppercase text-xs tracking-wider">Job Fit Summary</h4>
                   <p className="text-sm text-[var(--text-secondary)] bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50">
@@ -414,16 +456,16 @@ export default function AnalysisPage() {
                   </p>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50 border-l-4 border-l-[var(--text-primary)]">
-                    <h4 className="font-bold text-[var(--text-primary)] mb-2">Matched Skills</h4>
-                    <ul className="list-disc pl-4 text-sm text-[var(--text-secondary)]">
+                    <h4 className="font-bold text-[var(--text-primary)] mb-2 text-sm">Matched Skills</h4>
+                    <ul className="list-disc pl-4 text-sm text-[var(--text-secondary)] space-y-1">
                       {matchData.matched_skills?.map((skill: string, i: number) => <li key={i}>{skill}</li>)}
                     </ul>
                   </div>
                   <div className="bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50 border-l-4 border-l-[var(--text-secondary)]">
-                    <h4 className="font-bold text-[var(--text-primary)] mb-2">Missing Skills</h4>
-                    <ul className="list-disc pl-4 text-sm text-[var(--text-secondary)]">
+                    <h4 className="font-bold text-[var(--text-primary)] mb-2 text-sm">Missing Skills</h4>
+                    <ul className="list-disc pl-4 text-sm text-[var(--text-secondary)] space-y-1">
                       {matchData.missing_skills?.length > 0 ? matchData.missing_skills.map((skill: string, i: number) => <li key={i}>{skill}</li>) : <li>None identified</li>}
                     </ul>
                   </div>
@@ -445,7 +487,7 @@ export default function AnalysisPage() {
                 </div>
                 
                 {/* --- ROADMAP INJECTION SECTION --- */}
-                <div className="mt-8 pt-6 border-t border-[var(--border-color)]">
+                <div className="pt-6 border-t border-[var(--border-color)]">
                   {!roadmapData ? (
                     <div className="flex flex-col items-center bg-[var(--bg-color)] p-6 rounded-xl border border-[var(--border-color)]/50 text-center print:hidden">
                       <ListTree size={32} className="text-[var(--accent-color)] mb-3" />
@@ -462,7 +504,7 @@ export default function AnalysisPage() {
                   ) : (
                     <div className="flex flex-col">
                       <div className="mb-6">
-                        <h3 className="text-2xl font-black text-[var(--text-primary)] mb-2">{roadmapData.project_title}</h3>
+                        <h3 className="text-xl lg:text-2xl font-black text-[var(--text-primary)] mb-2">{roadmapData.project_title}</h3>
                         <p className="text-sm text-[var(--text-secondary)] mb-4 italic">{roadmapData.problem_statement}</p>
                         <div className="flex flex-wrap gap-2 mb-4">
                           {roadmapData.tech_stack.map((tech: string, i: number) => (
@@ -471,9 +513,6 @@ export default function AnalysisPage() {
                             </span>
                           ))}
                         </div>
-                        <p className="text-sm text-[var(--text-primary)] bg-[var(--bg-color)] p-4 rounded-lg border border-[var(--border-color)]/50">
-                          <strong>Why build this:</strong> {roadmapData.why_this_project_works}
-                        </p>
                       </div>
 
                       <div className="relative border-l-2 border-[var(--border-color)] ml-3 space-y-8 mt-4">
@@ -492,74 +531,43 @@ export default function AnalysisPage() {
                   )}
                 </div>
               </div>
+            )}
 
-              {/* Bottom CTA */}
-              <div className="mt-8 pt-6 border-t border-[var(--border-color)] print:hidden">
-                {matchData.match_percentage >= 75 ? (
-                  <div className="flex flex-col items-center text-center">
-                    <div className="flex items-center gap-2 mb-2">
-                      <CheckCircle size={24} className="text-green-500" />
-                      <h3 className="text-xl font-black text-[var(--text-primary)]">High Fit Detected</h3>
-                    </div>
-                    <p className="text-[var(--text-secondary)] text-sm mb-6">Your profile strongly aligns with this position. Do you want to improve with a Mock Interview?</p>
-                    <button onClick={() => handleInterviewLaunch("targeted-match-id")} className="px-8 py-4 bg-green-600 text-white font-black uppercase tracking-wide text-sm rounded-xl shadow-md hover:bg-green-700 transition-colors w-full flex items-center justify-center gap-2">
-                      <PlayCircle size={20} /> Apply For Interview
-                    </button>
+            {/* DYNAMIC SUGGESTIONS RENDERING */}
+            {status === "complete_without_jd" && suggestionData && (
+              <div className="space-y-6">
+                <div className="flex justify-between items-start pb-6 border-b border-[var(--border-color)]">
+                  <div>
+                    <h2 className="text-2xl lg:text-3xl font-black text-[var(--text-primary)]">Profile Analysis</h2>
+                    <p className="text-[var(--text-secondary)] text-sm mt-1">Competitive market roles based on your skills.</p>
                   </div>
-                ) : (
-                  <div className="flex flex-col items-center text-center">
-                    <div className="flex items-center gap-2 mb-2">
-                      <AlertTriangle size={24} className="text-red-500" />
-                      <h3 className="text-xl font-black text-[var(--text-primary)]">Critical Mismatch</h3>
-                    </div>
-                    <p className="text-[var(--text-primary)] font-bold text-sm mb-1">You are not an immediate fit for this job.</p>
-                    <p className="text-sm text-[var(--text-secondary)] mb-6">Complete the execution roadmap above to bridge your skill gap before applying.</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* DYNAMIC SUGGESTIONS RENDERING */}
-          {status === "complete_without_jd" && suggestionData && (
-            <div className="flex flex-col h-full overflow-y-auto p-8 custom-scrollbar print:overflow-visible print:p-0">
-              <div className="flex justify-between items-start mb-6 pb-6 border-b border-[var(--border-color)]">
-                <div>
-                  <h2 className="text-3xl font-black text-[var(--text-primary)]">Profile Analysis</h2>
-                  <p className="text-[var(--text-secondary)] mt-2">Competitive market roles based on your extracted skills.</p>
+                  <button onClick={() => window.print()} className="flex items-center gap-1 text-xs font-bold px-3 py-2 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-md hover:bg-[var(--border-color)]/20 transition-colors print:hidden">
+                    <Download size={14} /> Save PDF
+                  </button>
                 </div>
-                <button 
-                  onClick={saveAsPDF} 
-                  className="flex items-center gap-1 text-xs font-bold px-3 py-2 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-md hover:bg-[var(--border-color)]/20 transition-colors print:hidden"
-                >
-                  <Download size={14} /> Save as PDF
-                </button>
-              </div>
 
-              <div className="space-y-4">
-                {suggestionData.map((job: any, index: number) => (
-                  <div 
-                    key={index}
-                    className="w-full text-left p-5 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl"
-                  >
-                    <div className="flex justify-between items-center mb-2">
-                      <h4 className="font-black text-lg text-[var(--text-primary)]">{index + 1}. {job.title}</h4>
-                      <button onClick={() => handleInterviewLaunch(`suggested-role-${index}`)} className="text-[var(--text-secondary)] hover:text-[var(--accent-color)] transition-colors print:hidden">
-                        <PlayCircle size={20} />
-                      </button>
+                <div className="space-y-4">
+                  {suggestionData.map((job: any, index: number) => (
+                    <div key={index} className="w-full text-left p-5 bg-[var(--bg-color)] border border-[var(--border-color)] rounded-xl">
+                      <div className="flex justify-between items-center mb-2">
+                        <h4 className="font-black text-lg text-[var(--text-primary)]">{index + 1}. {job.title}</h4>
+                        <button onClick={() => handleInterviewLaunch(`suggested-role-${index}`)} className="text-[var(--text-secondary)] hover:text-[var(--accent-color)] transition-colors print:hidden">
+                          <PlayCircle size={20} />
+                        </button>
+                      </div>
+                      <p className="text-xs text-[var(--text-secondary)] mb-2"><strong className="text-[var(--text-primary)]">Role:</strong> {job.description}</p>
+                      <p className="text-xs text-[var(--text-secondary)] mb-2"><strong className="text-green-500">Alignment:</strong> {job.strengths_alignment}</p>
+                      <p className="text-xs text-[var(--text-secondary)]"><strong className="text-red-500">Gap:</strong> {job.current_limitations}</p>
                     </div>
-                    <p className="text-xs text-[var(--text-secondary)] mb-2"><strong className="text-[var(--text-primary)]">Role:</strong> {job.description}</p>
-                    <p className="text-xs text-[var(--text-secondary)] mb-2"><strong className="text-green-500">Alignment:</strong> {job.strengths_alignment}</p>
-                    <p className="text-xs text-[var(--text-secondary)]"><strong className="text-red-500">Gap:</strong> {job.current_limitations}</p>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
-
+            )}
+          </div>
         </div>
       </div>
 
+      <ToastContainer position="top-right" autoClose={4000} theme="colored" />
       {showAuthModal && (
         <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 px-4 rounded-xl print:hidden">
           <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-2xl p-8 max-w-md w-full shadow-2xl">
@@ -567,7 +575,6 @@ export default function AnalysisPage() {
             <p className="text-[var(--text-secondary)] mb-6">
               You must be signed in to launch a mock interview and track your performance metrics.
             </p>
-            
             <div className="flex flex-col gap-3">
               <button onClick={() => router.push("/register")} className="w-full py-3 bg-[var(--accent-color)] text-[var(--bg-color)] font-bold rounded-xl hover:opacity-90 transition-all">
                 Register Now

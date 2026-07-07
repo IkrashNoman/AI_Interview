@@ -4,6 +4,8 @@ import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud, Rocket, FileText } from "lucide-react";
 import { apiClient } from "./lib/api";
+import { toast, ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 type UploadState = "idle" | "processing";
 
@@ -38,7 +40,7 @@ export default function Home() {
     }
   };
 
-const validateAndSetFile = (selectedFile: File) => {
+  const validateAndSetFile = (selectedFile: File) => {
     const validMimeTypes = [
       "application/pdf",
       "application/msword", // .doc
@@ -52,7 +54,7 @@ const validateAndSetFile = (selectedFile: File) => {
     if (validMimeTypes.includes(selectedFile.type) || isValidExtension) {
       setFile(selectedFile);
     } else {
-      alert("System Error: Only PDF and Word documents (.doc, .docx) are accepted.");
+      toast.error("System Error: Only PDF and Word documents (.doc, .docx) are accepted.");
     }
   };
 
@@ -79,7 +81,7 @@ const validateAndSetFile = (selectedFile: File) => {
 
     } catch (error) {
       console.error("Extraction Failed:", error);
-      alert("Failed to parse resume. Ensure your FastAPI server is running.");
+      toast.error("Failed to parse resume. Ensure your FastAPI server is running.");
       setUploadState("idle");
     }
   };
@@ -147,6 +149,17 @@ const validateAndSetFile = (selectedFile: File) => {
           )}
         </div>
       </div>
+      
+      {/* Toastify Container to render the notifications */}
+      <ToastContainer 
+        position="top-right" 
+        autoClose={4000} 
+        hideProgressBar={false} 
+        newestOnTop 
+        closeOnClick 
+        pauseOnHover 
+        theme="colored" 
+      />
     </div>
   );
 }
