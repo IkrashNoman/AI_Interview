@@ -17,7 +17,9 @@ type AnalysisStatus = "idle" | "analyzing" | "complete_with_jd" | "complete_with
 
 export default function AnalysisPage() {
   const router = useRouter();
-  const isUserLoggedIn = false; 
+  
+  // --- Auth State ---
+  const [isUserLoggedIn, setIsUserLoggedIn] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
 
   // --- Section 1: Personal Info ---
@@ -71,15 +73,18 @@ export default function AnalysisPage() {
   const updateSkill = (index: number, value: string) => { const newSkills = [...skills]; newSkills[index] = value; setSkills(newSkills); };
   const removeSkill = (index: number) => skills.length > 1 && setSkills(skills.filter((_, i) => i !== index));
 
-  // Ensure window width check only runs on client to prevent SSR hydration mismatch
+  // --- Hydration & Setup ---
   useEffect(() => {
+    // Check for auth token in localStorage
+    const token = localStorage.getItem("token"); // Adjust this key based on your actual auth implementation
+    if (token) {
+      setIsUserLoggedIn(true);
+    }
+
     const checkMobile = () => setIsMobile(window.innerWidth < 1024);
     checkMobile();
     window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
 
-  useEffect(() => {
     const savedData = sessionStorage.getItem("extractedResume");
     if (savedData) {
       try {
@@ -100,13 +105,15 @@ export default function AnalysisPage() {
         console.error("Failed to parse extracted data.");
       }
     }
+
+    return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
   const runAnalysis = async () => {
     setStatus("analyzing");
     setErrorMessage("");
     setRoadmapData(null); 
-    setDrawerHeight(50); // reset mobile drawer
+    setDrawerHeight(50);
 
     const payload = {
       resume_data: {
@@ -170,7 +177,9 @@ export default function AnalysisPage() {
       setShowAuthModal(true);
       return;
     }
-    router.push(`/interview/${jobId}`);
+    // Save the context so the initialize page knows what role/jd the user is preparing for
+    sessionStorage.setItem("interviewTargetJobId", jobId);
+    router.push(`/interview/initialize`);
   };
 
   // --- Touch/Mouse Drag Logic for Mobile Bottom Sheet ---
