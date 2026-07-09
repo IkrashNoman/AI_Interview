@@ -2,6 +2,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import parser, matcher
 from app.api.v1.interview import router as interview_router
+# Add these imports at the top
+from app.core.database import engine
+from app import models
+
+models.Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
     title="AI Interview Coach API", 
     description="Phase 1: Resume Parsers & Context Engines"
