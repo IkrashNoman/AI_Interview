@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import parser, matcher
-
+from app.api.v1.interview import router as interview_router
 app = FastAPI(
     title="AI Interview Coach API", 
     description="Phase 1: Resume Parsers & Context Engines"
@@ -19,6 +19,7 @@ app.add_middleware(
 # Register your route files here
 app.include_router(parser.router, prefix="/api/v1/parser", tags=["Parser"])
 app.include_router(matcher.router, prefix="/api/v1/matcher", tags=["Matcher"])
+app.include_router(interview_router, prefix="/api/v1/interview", tags=["Interview Engine"])
 
 @app.get("/")
 def health_check():

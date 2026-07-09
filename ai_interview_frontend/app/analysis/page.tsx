@@ -19,7 +19,7 @@ export default function AnalysisPage() {
   const router = useRouter();
   
   // --- Auth State ---
-  const [isUserLoggedIn, setIsUserLoggedIn] = useState(false);
+  const [isUserLoggedIn, setIsUserLoggedIn] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
 
   // --- Section 1: Personal Info ---
