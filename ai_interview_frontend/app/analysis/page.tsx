@@ -179,7 +179,7 @@ export default function AnalysisPage() {
     }
     // Save the context so the initialize page knows what role/jd the user is preparing for
     sessionStorage.setItem("interviewTargetJobId", jobId);
-    router.push(`/interview/initialize`);
+    router.push(`/interview`);
   };
 
   // --- Touch/Mouse Drag Logic for Mobile Bottom Sheet ---

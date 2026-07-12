@@ -1,35 +1,31 @@
 from fastapi import APIRouter, HTTPException, status, Depends
+from sqlalchemy.orm import Session
 import logging
 from app.schemas.interview import InterviewInitializeRequest, InterviewBlueprintResponse
 from app.services.interview_client import generate_interview_blueprint
 from app.core.database import get_db
-from app.models import InterviewSession
-from sqlalchemy.orm import Session
+from app.models import InterviewSession, QuestionEvaluation
 
-# Configure logger
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
-    
+
 @router.post("/initialize", response_model=InterviewBlueprintResponse, status_code=status.HTTP_201_CREATED)
 async def initialize_interview(request: InterviewInitializeRequest, db: Session = Depends(get_db)):
     """
-    Initializes a new interview session and saves it to the SQLite database.
+    Initializes a new interview session and locks the JSON blueprint into SQLite.
     """
     try:
-        # 1. Generate the blueprint via Gemini
         blueprint = generate_interview_blueprint(
             job_description=request.job_description,
-            parsed_resume=request.parsed_resume.model_dump() # Convert Pydantic to dict for JSON serialization
+            parsed_resume=request.parsed_resume.model_dump() 
         )
         
-        # 2. Save the session state to the database
         db_session = InterviewSession(
             id=blueprint.session_id,
             status="INITIALIZED",
             job_description=request.job_description,
             parsed_resume=request.parsed_resume.model_dump(),
-            blueprint=[q.model_dump() for q in blueprint.blueprint] # Store questions as JSON array
+            blueprint=[q.model_dump() for q in blueprint.blueprint]
         )
         db.add(db_session)
         db.commit()
@@ -40,4 +36,64 @@ async def initialize_interview(request: InterviewInitializeRequest, db: Session 
         
     except Exception as e:
         logger.error(f"Error generating blueprint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate interview blueprint: {str(e)}"
+        )
+
+@router.get("/{session_id}/results")
+async def get_interview_results(session_id: str, db: Session = Depends(get_db)):
+    """
+    Aggregates all background evaluations and computes the final Composite Score.
+    """
+    session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    evaluations = db.query(QuestionEvaluation).filter(QuestionEvaluation.session_id == session_id).all()
+    
+    if not evaluations:
+        return {"status": "pending", "message": "No evaluations processed yet. Check background worker logs."}
+
+    total_questions_answered = len(evaluations)
+    
+    # Calculate Averages (protect against division by zero and nulls)
+    avg_structure = sum((e.structure_score or 0) for e in evaluations) / total_questions_answered
+    avg_correctness = sum((e.correctness_score or 0) for e in evaluations) / total_questions_answered
+    avg_completeness = sum((e.completeness_score or 0) for e in evaluations) / total_questions_answered
+    
+    avg_wpm = sum((e.wpm or 0) for e in evaluations) / total_questions_answered
+    total_fillers = sum((e.filler_words_count or 0) for e in evaluations)
+
+    # Pure interview performance calculation
+    overall_interview_score = (avg_structure + avg_correctness + avg_completeness) / 3
+
+    # Lock session state
+    session.status = "COMPLETED"
+    db.commit()
+
+    return {
+        "session_id": session_id,
+        "status": "COMPLETED",
+        "metrics": {
+            "questions_answered": total_questions_answered,
+            "overall_interview_score": round(overall_interview_score, 2),
+            "average_structure": round(avg_structure, 2),
+            "average_correctness": round(avg_correctness, 2),
+            "average_completeness": round(avg_completeness, 2),
+            "communication": {
+                "average_wpm": round(avg_wpm, 2),
+                "total_filler_words": total_fillers
+            }
+        },
+        "detailed_evaluations": [
+            {
+                "question_id": e.question_id,
+                "structure_score": e.structure_score,
+                "correctness_score": e.correctness_score,
+                "completeness_score": e.completeness_score,
+                "filler_words": e.filler_words_count,
+                "wpm": e.wpm
+            } for e in evaluations
+        ]
+    }

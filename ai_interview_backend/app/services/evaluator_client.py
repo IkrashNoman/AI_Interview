@@ -71,3 +71,35 @@ def evaluate_candidate_answer(question_text: str, expected_keywords: list[str], 
         return AnswerEvaluation.model_validate_json(response.text)
     except Exception as e:
         raise RuntimeError(f"Evaluation LLM failed: {str(e)}")
+    
+class IntentClassification(BaseModel):
+    intent: str = Field(description="Must be either 'clarification' or 'answer'")
+    simplified_question: str = Field(description="If intent is clarification, provide a one to two sentence simplified version of the original question. Otherwise, empty string.")
+
+def classify_intent_and_simplify(transcript: str, original_question: str) -> IntentClassification:
+    """
+    Ultra-fast LLM call to determine if the user is asking for the question to be repeated/explained.
+    """
+    system_instruction = """
+    Determine if the candidate's transcript is an attempt to answer the question, or a request for clarification (e.g., 'can you repeat that', 'what do you mean by', 'pardon').
+    Return strict JSON.
+    """
+    prompt = f"ORIGINAL QUESTION: {original_question}\nCANDIDATE TRANSCRIPT: {transcript}"
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=IntentClassification,
+                temperature=0.1,
+                max_output_tokens=100
+            ),
+        )
+        return IntentClassification.model_validate_json(response.text)
+    except Exception as e:
+        # Default to treating it as an answer if the classifier fails, to prevent infinite loops
+        return IntentClassification(intent="answer", simplified_question="")
+    

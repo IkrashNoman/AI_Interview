@@ -31,6 +31,9 @@ class QuestionEvaluation(Base):
     structure_score = Column(Integer, nullable=True)
     correctness_score = Column(Integer, nullable=True)
     completeness_score = Column(Integer, nullable=True)
+    # Add these below the scoring columns in app/models.py
+    wpm = Column(Integer, nullable=True, default=0)
+    filler_words_count = Column(Integer, nullable=True, default=0)
     
     created_at = Column(DateTime, default=datetime.utcnow)
 
