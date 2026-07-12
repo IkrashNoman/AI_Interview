@@ -124,6 +124,7 @@ export default function PreFlightPage() {
       });
 
       const sessionId = response.data.session_id;
+      sessionStorage.setItem("interviewBlueprint", JSON.stringify(response.data.blueprint));
       router.push(`/interview/${sessionId}`);
       
     } catch (error) {
