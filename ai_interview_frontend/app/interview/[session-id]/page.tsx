@@ -27,6 +27,17 @@
  * jsDelivr's CDN at runtime, so no bundler config is required to get going.
  * If you later want to self-host those assets (e.g. offline / stricter CSP),
  * see: https://docs.vad.ricky0123.com/user-guide/browser/
+ *
+ * 3) Screen-recording proctoring — important limitation to know about:
+ *    getDisplayMedia() cannot force a user to share their entire screen.
+ *    The browser always shows a picker letting them choose "Entire Screen",
+ *    a specific window, or a browser tab — that choice can't be removed by
+ *    an app. What CAN be done, and what's implemented below: after they
+ *    pick something, check track.getSettings().displaySurface. If it isn't
+ *    "monitor" (i.e. they shared a single window/tab instead of the whole
+ *    screen), that's treated as a proctoring violation, same as declining
+ *    to share at all — because sharing just one app still lets someone
+ *    alt-tab to something else undetected.
  */
 
 import { useEffect, useState, useRef, use } from "react";
@@ -62,6 +73,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [strikes, setStrikes] = useState(0);
   const [showStrikeModal, setShowStrikeModal] = useState(false);
+  const [strikeReason, setStrikeReason] = useState<"focus" | "screen">("focus");
   const [isRecording, setIsRecording] = useState(false);
   const [aiSpeaking, setAiSpeaking] = useState(false);
   const [isProcessingChunk, setIsProcessingChunk] = useState(false);
@@ -80,6 +92,15 @@ export default function CoreInterviewLoop({ params }: PageProps) {
   const audioOnlyStreamRef = useRef<MediaStream | null>(null);
   const silenceCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSpokeTimeRef = useRef<number>(Date.now());
+
+  // --- Screen-recording proctoring refs ---
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenRecorderRef = useRef<MediaRecorder | null>(null);
+  const screenChunksRef = useRef<BlobPart[]>([]);
+  // Whatever should happen once screen sharing is (re)granted — starting the
+  // first question, or resuming a paused recording after a mid-interview loss.
+  const pendingScreenShareActionRef = useRef<(() => void) | null>(null);
+  const [awaitingScreenShare, setAwaitingScreenShare] = useState(false);
 
   // --- 1. Initialization ---
   useEffect(() => {
@@ -121,10 +142,144 @@ export default function CoreInterviewLoop({ params }: PageProps) {
       // for the whole session so we don't reload the ML model per question.
       await initVAD(stream);
 
-      speakQuestion(firstQuestion);
+      // The interview must NOT start until the entire screen is being
+      // shared. If it's denied, limited to a window/tab, or fails for any
+      // reason, we add a strike and hold here — speakQuestion only runs
+      // once requestScreenShare() actually succeeds.
+      const screenShared = await requestScreenShare();
+      if (screenShared) {
+        speakQuestion(firstQuestion);
+      } else {
+        setAwaitingScreenShare(true);
+        pendingScreenShareActionRef.current = () => speakQuestion(firstQuestion);
+      }
     } catch (err) {
       toast.error("Hardware access lost. You must allow camera/mic.");
     }
+  };
+
+  // --- Screen-recording proctoring ---
+  // Returns true only if the ENTIRE screen is now actively being shared.
+  const requestScreenShare = async (): Promise<boolean> => {
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        // This is only a hint to the browser's picker UI — it cannot force
+        // the user to actually choose "Entire Screen" over a window/tab.
+        video: { displaySurface: "monitor" } as MediaTrackConstraints,
+        audio: false,
+      });
+
+      const screenTrack = screenStream.getVideoTracks()[0];
+      const settings = screenTrack.getSettings() as MediaTrackSettings & { displaySurface?: string };
+
+      if (settings.displaySurface && settings.displaySurface !== "monitor") {
+        // They shared a single window/tab instead of the whole screen —
+        // that doesn't give us real cheating visibility, so treat it the
+        // same as refusing to share at all.
+        screenStream.getTracks().forEach(t => t.stop());
+        toast.error("Please share your ENTIRE SCREEN, not a single window or tab.");
+        addStrike("screen");
+        return false;
+      }
+
+      screenStreamRef.current = screenStream;
+      setAwaitingScreenShare(false);
+
+      // Fires if the user clicks the browser's native "Stop sharing" button,
+      // or closes the window/tab they were sharing.
+      screenTrack.onended = () => {
+        screenStreamRef.current = null;
+        setAwaitingScreenShare(true);
+        toast.error("Screen sharing was stopped. The interview is paused until you share again.");
+
+        // Freeze the interview exactly where it is — pause any in-progress
+        // recording — and only resume once sharing is granted again.
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.pause();
+        }
+        const wasRecordingPaused = mediaRecorderRef.current?.state === "paused";
+        pendingScreenShareActionRef.current = () => {
+          if (wasRecordingPaused && mediaRecorderRef.current?.state === "paused") {
+            mediaRecorderRef.current.resume();
+          }
+        };
+
+        addStrike("screen");
+      };
+
+      startScreenRecording(screenStream);
+      return true;
+    } catch (err) {
+      // User denied the screen-share permission prompt entirely.
+      toast.error("Screen recording is required for this interview.");
+      setAwaitingScreenShare(true);
+      addStrike("screen");
+      return false;
+    }
+  };
+
+  const startScreenRecording = (stream: MediaStream) => {
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : 'video/webm';
+
+    const recorder = new MediaRecorder(stream, { mimeType });
+    screenChunksRef.current = [];
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) screenChunksRef.current.push(event.data);
+    };
+
+    recorder.onstop = () => {
+      const screenBlob = new Blob(screenChunksRef.current, { type: mimeType });
+
+      // =====================================================================
+      // ⬇️ FOR TESTING ONLY ⬇️
+      console.log("Screen recording captured:", screenBlob.size, "bytes");
+      // ⬆️ END TESTING BLOCK ⬆️
+      // =====================================================================
+
+      // =====================================================================
+      // ⬇️ REAL PRODUCTION BACKEND LOGIC ⬇️
+      // Uncomment when you want to upload the full screen recording for
+      // review alongside the session's audio answers.
+      /*
+      const formData = new FormData();
+      formData.append("session_id", sessionId || "test-session");
+      formData.append("screen_recording", screenBlob, `${sessionId}_screen.webm`);
+      apiClient.post("/api/v1/proctoring/screen-recording", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      }).catch((err) => console.error("Failed to upload screen recording:", err));
+      */
+      // ⬆️ END PRODUCTION BLOCK ⬆️
+      // =====================================================================
+    };
+
+    // Collect in 5s chunks rather than one giant blob at the very end.
+    recorder.start(5000);
+    screenRecorderRef.current = recorder;
+  };
+
+  const stopScreenRecording = () => {
+    if (screenRecorderRef.current && screenRecorderRef.current.state !== "inactive") {
+      screenRecorderRef.current.stop();
+    }
+    screenStreamRef.current?.getTracks().forEach(t => t.stop());
+    screenStreamRef.current = null;
+  };
+
+  // Shared strike logic for both focus-loss and screen-share violations.
+  const addStrike = (reason: "focus" | "screen") => {
+    setStrikeReason(reason);
+    setStrikes(prev => {
+      const newStrikes = prev + 1;
+      if (newStrikes >= 3) {
+        terminateSession();
+        return newStrikes;
+      }
+      setShowStrikeModal(true);
+      return newStrikes;
+    });
   };
 
   const initVAD = async (fullStream: MediaStream) => {
@@ -181,6 +336,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
       }
       vadInstanceRef.current = null;
     }
+    stopScreenRecording();
     window.speechSynthesis.cancel();
   };
 
@@ -281,15 +437,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
         mediaRecorderRef.current.pause();
       }
-      setStrikes(prev => {
-        const newStrikes = prev + 1;
-        if (newStrikes >= 3) {
-          terminateSession();
-          return newStrikes;
-        }
-        setShowStrikeModal(true);
-        return newStrikes;
-      });
+      addStrike("focus");
       absenceTimerRef.current = setInterval(() => {
         setStrikes(prev => {
           const newStrikes = prev + 1;
@@ -316,6 +464,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
 
   const terminateSession = () => {
     toast.error("SESSION TERMINATED: Maximum proctoring violations reached.");
+    stopScreenRecording();
     router.replace(`/interview/${sessionId}/results`);
   };
 
@@ -332,17 +481,18 @@ export default function CoreInterviewLoop({ params }: PageProps) {
     // ⬇️ FOR TESTING ONLY (NO API CREDITS BURNED) ⬇️
     // Comment this entire block out when connecting to the real backend.
 
-    // await new Promise(resolve => setTimeout(resolve, 1500));
-    // if (currentIndex < questions.length - 1) {
-    //   const nextIndex = currentIndex + 1;
-    //   setCurrentIndex(nextIndex);
-    //   setCurrentQuestionText(questions[nextIndex].question_text);
-    //   speakQuestion(questions[nextIndex].question_text);
-    // } else {
-    //   router.push(`/interview/${sessionId}/results`);
-    // }
-    // setIsProcessingChunk(false);
-    // return;
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    if (currentIndex < questions.length - 1) {
+      const nextIndex = currentIndex + 1;
+      setCurrentIndex(nextIndex);
+      setCurrentQuestionText(questions[nextIndex].question_text);
+      speakQuestion(questions[nextIndex].question_text);
+    } else {
+      stopScreenRecording();
+      router.push(`/interview/${sessionId}/results`);
+    }
+    setIsProcessingChunk(false);
+    return;
 
     // ⬆️ END TESTING BLOCK ⬆️
     // =====================================================================
@@ -352,6 +502,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
     // ⬇️ REAL PRODUCTION BACKEND LOGIC ⬇️
     // Uncomment this block when you want to hit your real FastAPI Server.
 
+    /*
     const formData = new FormData();
     formData.append("session_id", sessionId || "test-session");
     formData.append("question_id", currentQ.id.toString());
@@ -388,7 +539,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
     } finally {
       setIsProcessingChunk(false);
     }
-
+    */
     // ⬆️ END PRODUCTION BLOCK ⬆️
     // =====================================================================
   };
@@ -405,18 +556,38 @@ export default function CoreInterviewLoop({ params }: PageProps) {
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 px-4">
           <div className="bg-[var(--surface-card-color)] border-2 border-[var(--accent-color)] p-6 md:p-8 rounded-xl max-w-lg w-full text-center shadow-2xl">
             <ShieldAlert className="text-[var(--accent-color)] mx-auto mb-4" size={64} />
-            <h2 className="text-2xl md:text-3xl font-black text-[var(--text-primary)] mb-2 uppercase">Focus Lost</h2>
+            <h2 className="text-2xl md:text-3xl font-black text-[var(--text-primary)] mb-2 uppercase">
+              {strikeReason === "screen" ? "Screen Recording Required" : "Focus Lost"}
+            </h2>
             <p className="text-[var(--text-secondary)] mb-6 text-sm md:text-base">
-              The system detected you left the interview window. This is a strict violation of the proctoring rules.
+              {strikeReason === "screen"
+                ? "This interview requires your entire screen to be shared for the full duration. Sharing was declined, stopped, or limited to a single window/tab."
+                : "The system detected you left the interview window. This is a strict violation of the proctoring rules."}
               <br /><br />
               <strong className="text-[var(--accent-color)] text-xl">Strike {strikes} of 3</strong>
             </p>
-            <button
-              onClick={() => setShowStrikeModal(false)}
-              className="w-full py-4 bg-[var(--accent-color)] text-[var(--text-inverse)] font-black uppercase tracking-widest rounded-lg hover:opacity-90"
-            >
-              I Understand, Return to Interview
-            </button>
+            {strikeReason === "screen" ? (
+              <button
+                onClick={async () => {
+                  setShowStrikeModal(false);
+                  const shared = await requestScreenShare();
+                  if (shared && pendingScreenShareActionRef.current) {
+                    pendingScreenShareActionRef.current();
+                    pendingScreenShareActionRef.current = null;
+                  }
+                }}
+                className="w-full py-4 bg-[var(--accent-color)] text-[var(--text-inverse)] font-black uppercase tracking-widest rounded-lg hover:opacity-90"
+              >
+                Share Entire Screen to Continue
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowStrikeModal(false)}
+                className="w-full py-4 bg-[var(--accent-color)] text-[var(--text-inverse)] font-black uppercase tracking-widest rounded-lg hover:opacity-90"
+              >
+                I Understand, Return to Interview
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -450,7 +621,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
         <div className="flex flex-col sm:flex-row gap-4">
           <button
             onClick={stopRecording}
-            disabled={aiSpeaking || isProcessingChunk || !isRecording}
+            disabled={aiSpeaking || isProcessingChunk || !isRecording || awaitingScreenShare}
             className={`flex-1 py-4 flex items-center justify-center gap-2 font-black uppercase tracking-widest rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed ${!aiSpeaking && isRecording ? 'bg-red-500/10 text-red-500 border border-red-500 hover:bg-red-500/20' : 'bg-[var(--surface-card-color)] text-[var(--text-secondary)] border border-[var(--border-color)]'}`}
           >
             {isProcessingChunk ? (
@@ -475,7 +646,7 @@ export default function CoreInterviewLoop({ params }: PageProps) {
           </div>
         </div>
         <p className="mt-8 text-sm font-bold text-[var(--text-secondary)] uppercase tracking-widest text-center">
-          {aiSpeaking ? "AI is Speaking..." : isRecording ? "Listening to you..." : "Processing..."}
+          {awaitingScreenShare ? "Waiting for Screen Share..." : aiSpeaking ? "AI is Speaking..." : isRecording ? "Listening to you..." : "Processing..."}
         </p>
       </div>
 
