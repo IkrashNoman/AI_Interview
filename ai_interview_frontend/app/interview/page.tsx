@@ -97,7 +97,7 @@ export default function PreFlightPage() {
           mediaRecorder.stop();
           setIsRecordingMic(false);
         }
-      }, 5000);
+      }, 11000);
 
     } catch (err) {
       toast.error("Microphone access denied.");
@@ -233,7 +233,7 @@ export default function PreFlightPage() {
                   <Mic className={micTested ? "text-[var(--accent-color)]" : "text-[var(--text-secondary)]"} />
                   <div>
                     <h4 className="font-bold text-[var(--accent-color)]">Microphone Input</h4>
-                    <p className="text-xs text-[var(--text-secondary)]">Record a 5-second test clip.</p>
+                    <p className="text-xs text-[var(--text-secondary)]">Record a 10-second test clip.</p>
                   </div>
                 </div>
                 
