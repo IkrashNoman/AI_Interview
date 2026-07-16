@@ -54,7 +54,7 @@ export default function PreFlightPage() {
     };
   }, []);
 
-  // 2. Speaker Logic (Allows unlimited replays)
+  // 2. Speaker Logic
   const testSpeaker = () => {
     setSpeakerTested(false);
     const audio = new Audio('/speaker-test.wav'); 
@@ -63,12 +63,11 @@ export default function PreFlightPage() {
       .catch(() => toast.error("Failed to play test audio. Check your volume."));
   };
 
-  // 3. Microphone Logic (Allows re-recording)
+  // 3. Microphone Logic
   const testMicrophone = async () => {
     try {
       setMicTested(false);
       
-      // Cleanup previous recording if user is re-testing
       if (micAudioUrl) {
         URL.revokeObjectURL(micAudioUrl);
         setMicAudioUrl(null);
@@ -94,31 +93,24 @@ export default function PreFlightPage() {
       mediaRecorder.start();
       setIsRecordingMic(true);
 
-      // Record for exactly 5 seconds
       setTimeout(() => {
         if (mediaRecorder.state === "recording") {
           mediaRecorder.stop();
           setIsRecordingMic(false);
         }
-      }, 11000);
+      }, 10005);
 
     } catch (err) {
       toast.error("Microphone access denied.");
     }
   };
 
-  // 4. Screen-Share Logic (Dry run only — the interview page must request its
-  // own getDisplayMedia stream since a stream can't survive a page
-  // navigation. This step exists purely to surface permission/"which surface
-  // did they pick" problems BEFORE the interview clock starts, instead of
-  // the user hitting a denial strike on question one.)
+  // 4. Screen-Share Logic (Saves active stream to window context)
   const testScreenShare = async () => {
     setIsCheckingScreen(true);
     setScreenTested(false);
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        // Hints the picker toward "Entire Screen" — browsers don't let an
-        // app force this choice, so we still have to validate what came back.
         video: { displaySurface: "monitor" } as MediaTrackConstraints,
         audio: false,
       });
@@ -133,21 +125,29 @@ export default function PreFlightPage() {
         return;
       }
 
+      // Persist stream in window memory for core interview loop handoff
+      if (typeof window !== "undefined") {
+        (window as any).__screenStream = stream;
+      }
+
       if (screenPreviewRef.current) {
         screenPreviewRef.current.srcObject = stream;
       }
       setScreenTested(true);
+      setIsCheckingScreen(false);
 
-      // We only needed this to confirm the browser will actually grant
-      // whole-screen sharing. Stop the tracks shortly after — the interview
-      // page will open its own stream when it starts.
-      setTimeout(() => {
-        stream.getTracks().forEach(t => t.stop());
+      // Reset validation if user manually cancels sharing on this page
+      track.onended = () => {
+        if (typeof window !== "undefined") {
+          (window as any).__screenStream = null;
+        }
+        setScreenTested(false);
         if (screenPreviewRef.current) screenPreviewRef.current.srcObject = null;
-        setIsCheckingScreen(false);
-      }, 11000);
+        toast.error("Screen sharing stopped. Entire screen sharing is required to proceed.");
+      };
+
     } catch (err) {
-      toast.error("Screen sharing was denied or cancelled. This is required to start the interview.");
+      toast.error("Screen sharing was denied or cancelled.");
       setIsCheckingScreen(false);
     }
   };
@@ -157,12 +157,17 @@ export default function PreFlightPage() {
     setIsInitializing(true);
     
     const savedResume = sessionStorage.getItem("extractedResume");
-    const targetJobId = sessionStorage.getItem("interviewTargetJobId"); 
     
     if (!savedResume) {
       toast.error("Resume data missing. Please return to analysis.");
       router.push("/analysis");
       return;
+    }
+
+    // Stop camera feed so it is free to be re-captured in the next screen
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
     }
 
     try {
@@ -192,8 +197,6 @@ export default function PreFlightPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        
-        {/* Left Column: Camera Feed & Proctoring Rules */}
         <div className="space-y-6">
           <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-xl p-4 overflow-hidden relative aspect-video flex items-center justify-center bg-black shadow-inner">
             <video 
@@ -235,13 +238,10 @@ export default function PreFlightPage() {
           </div>
         </div>
 
-        {/* Right Column: Hardware Stepper */}
         <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] rounded-xl p-6 shadow-lg flex flex-col">
           <h2 className="text-xl font-black mb-6 text-[var(--text-primary)] border-b border-[var(--border-color)] pb-2">Hardware Validation</h2>
           
           <div className="flex-1 space-y-6">
-            
-            {/* Step 1: Camera */}
             <div className={`flex items-center justify-between p-4 rounded-lg border ${cameraTested ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10' : 'border-[var(--border-color)] bg-[var(--bg-color)]'}`}>
               <div className="flex items-center gap-3">
                 <Camera className={cameraTested ? "text-[var(--accent-color)]" : "text-[var(--text-secondary)]"} />
@@ -258,7 +258,6 @@ export default function PreFlightPage() {
               </div>
             </div>
 
-            {/* Step 2: Speaker */}
             <div className={`flex items-center justify-between p-4 rounded-lg border ${speakerTested ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10' : 'border-[var(--border-color)] bg-[var(--bg-color)]'}`}>
               <div className="flex items-center gap-3">
                 <Volume2 className={speakerTested ? "text-[var(--accent-color)]" : "text-[var(--text-secondary)]"} />
@@ -275,14 +274,13 @@ export default function PreFlightPage() {
               </div>
             </div>
 
-            {/* Step 3: Microphone */}
             <div className={`flex flex-col p-4 rounded-lg border ${micTested ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10' : 'border-[var(--border-color)] bg-[var(--bg-color)]'}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <Mic className={micTested ? "text-[var(--accent-color)]" : "text-[var(--text-secondary)]"} />
                   <div>
                     <h4 className="font-bold text-[var(--accent-color)]">Microphone Input</h4>
-                    <p className="text-xs text-[var(--text-secondary)]">Record a 10-second test clip.</p>
+                    <p className="text-xs text-[var(--text-secondary)]">Record a test clip.</p>
                   </div>
                 </div>
                 
@@ -300,7 +298,6 @@ export default function PreFlightPage() {
                 </div>
               </div>
               
-              {/* Playback Audio */}
               {micAudioUrl && !isRecordingMic && (
                 <div className="mt-4 pt-4 border-t border-[var(--border-color)]/30">
                   <p className="text-xs text-[var(--text-secondary)] mb-2">Listen to your recording to ensure clarity:</p>
@@ -309,7 +306,6 @@ export default function PreFlightPage() {
               )}
             </div>
 
-            {/* Step 4: Screen Share */}
             <div className={`flex flex-col p-4 rounded-lg border ${screenTested ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10' : 'border-[var(--border-color)] bg-[var(--bg-color)]'}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -317,7 +313,7 @@ export default function PreFlightPage() {
                   <div>
                     <h4 className="font-bold text-[var(--accent-color)]">Screen Recording</h4>
                     <p className="text-xs text-[var(--text-secondary)]">
-                      {screenTested ? "Entire-screen sharing confirmed." : "Confirm you can share your ENTIRE screen."}
+                      {screenTested ? "Entire-screen sharing active." : "Confirm you can share your ENTIRE screen."}
                     </p>
                   </div>
                 </div>
@@ -336,13 +332,9 @@ export default function PreFlightPage() {
                 </div>
               </div>
 
-              {/* Note: this stream is intentionally short-lived — it exists
-                  only to validate the permission grant and surface selection
-                  ahead of time. The interview page opens its own stream. */}
-              {isCheckingScreen && (
+              {screenTested && (
                 <div className="mt-4 pt-4 border-t border-[var(--border-color)]/30">
-                  <p className="text-xs text-[var(--text-secondary)] mb-2">Verifying — this preview will close automatically:</p>
-                  <video ref={screenPreviewRef} autoPlay muted className="w-full h-24 object-contain rounded border border-[var(--border-color)] bg-black" />
+                  <p className="text-xs text-[var(--text-secondary)] mb-2">Screen Share Active. Ready for transition.</p>
                 </div>
               )}
             </div>
@@ -358,13 +350,7 @@ export default function PreFlightPage() {
                 <><Loader2 className="animate-spin" size={24} /> Generating Blueprint...</>
               ) : "Enter Interview Environment"}
             </button>
-            {!screenTested && (
-              <p className="text-xs text-center text-[var(--text-secondary)] mt-2">
-                You'll be asked to share your screen once more when the interview starts — browsers require a fresh permission grant on each page.
-              </p>
-            )}
           </div>
-
         </div>
       </div>
       <ToastContainer position="top-right" autoClose={4000} theme="colored" />

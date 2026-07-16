@@ -4,8 +4,7 @@ engine = pyttsx3.init()
 
 text = """
 This is your AI generated interview coach speaking.
-Am I audible to you? Please check the box if you can hear me clearly.
-If you cannot check it, your interview will not be started.
+Are you ready to start the interview?
 """
 
 engine.setProperty("rate", 200)

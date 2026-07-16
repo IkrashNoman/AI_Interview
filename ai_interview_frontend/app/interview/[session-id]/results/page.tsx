@@ -1,55 +1,139 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { 
-  BarChart, MessageSquare, Activity, CheckCircle, XCircle, ShieldAlert, Loader2, ArrowLeft
+  BarChart, MessageSquare, Activity, CheckCircle, XCircle, ShieldAlert, Loader2, ArrowLeft, RefreshCw
 } from "lucide-react";
 import { apiClient } from "@/app/lib/api";
-
-interface DetailedEvaluation {
-  question_id: number;
-  structure_score: number;
-  correctness_score: number;
-  completeness_score: number;
-  filler_words: number;
-  wpm: number;
-}
 
 export default function InterviewResultsPage() {
   const params = useParams();
   const router = useRouter();
-  const sessionId = params.session_id as string;
+  
+  const sessionId = (params?.["session-id"] || params?.["session_id"] || params?.session_id) as string | undefined;
 
   const [results, setResults] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const fetchResults = async () => {
+    if (!sessionId || sessionId === "undefined") return;
+    try {
+      const response = await apiClient.get(`/api/v1/interview/${sessionId}/results`);
+      const data = response.data;
+      
+      if (data.status === "pending") {
+        setLoading(true);
+      } else if (data.metrics && data.detailed_evaluations) {
+        setResults(data);
+        setLoading(false);
+        clearAllTimers();
+      } else {
+        setError(true);
+        setLoading(false);
+        clearAllTimers();
+      }
+    } catch (err) {
+      console.error("Failed to fetch results:", err);
+      setError(true);
+      setLoading(false);
+      clearAllTimers();
+    }
+  };
+
+  const clearAllTimers = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+  };
+
+  const handleManualRetry = () => {
+    setError(false);
+    setLoading(true);
+    setElapsedTime(0);
+    fetchResults();
+    
+    clearAllTimers();
+    pollIntervalRef.current = setInterval(fetchResults, 3000);
+    timerIntervalRef.current = setInterval(() => {
+      setElapsedTime(prev => prev + 1);
+    }, 1000);
+  };
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || sessionId === "undefined") return;
 
-    const fetchResults = async () => {
-      try {
-        const response = await apiClient.get(`/api/v1/interview/${sessionId}/results`);
-        setResults(response.data);
-      } catch (error) {
-        console.error("Failed to fetch results:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
+    // Start initial execution and timer loops
     fetchResults();
+    pollIntervalRef.current = setInterval(fetchResults, 3000);
+    timerIntervalRef.current = setInterval(() => {
+      setElapsedTime(prev => prev + 1);
+    }, 1000);
+
+    return () => clearAllTimers();
   }, [sessionId]);
 
-  if (loading) return <div className="min-h-[calc(100vh-80px)] flex flex-col items-center justify-center px-4 text-center"><Loader2 className="animate-spin text-[var(--accent-color)] mb-4" size={48} /><h2 className="text-xl font-black text-[var(--text-primary)]">Aggregating Neural Metrics...</h2></div>;
-  if (!results || results.status === "pending") return <div className="min-h-[calc(100vh-80px)] flex flex-col items-center justify-center px-4 text-center"><XCircle className="text-red-500 mb-4" size={48} /><h2 className="text-xl font-black text-[var(--text-primary)]">Data Retrieval Failed</h2><p className="text-[var(--text-secondary)] mt-2">Scores are still processing or the session is invalid.</p></div>;
+  // If polling exceeds 60 seconds, stop automatic execution and flag a potential backend worker crash
+  useEffect(() => {
+    if (elapsedTime >= 60 && loading) {
+      clearAllTimers();
+    }
+  }, [elapsedTime, loading]);
+
+  if (loading) {
+    return (
+      <div className="min-h-[calc(100vh-80px)] flex flex-col items-center justify-center px-4 text-center">
+        {elapsedTime >= 60 ? (
+          <div className="bg-[var(--surface-card-color)] border border-[var(--border-color)] p-8 rounded-xl max-w-md shadow-2xl">
+            <ShieldAlert className="text-yellow-500 mx-auto mb-4 animate-pulse" size={48} />
+            <h2 className="text-xl font-black text-[var(--text-primary)] uppercase">Grading Pipeline Delayed</h2>
+            <p className="text-[var(--text-secondary)] mt-2 text-sm leading-relaxed">
+              The evaluation is taking longer than expected ({elapsedTime}s). Your backend worker or processing queue may be offline or heavily backlogged.
+            </p>
+            <button 
+              onClick={handleManualRetry} 
+              className="mt-6 w-full py-3 bg-[var(--accent-color)] text-[var(--text-inverse)] font-black uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 hover:opacity-90 transition-all text-sm"
+            >
+              <RefreshCw size={16} /> Check Status Again
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <Loader2 className="animate-spin text-[var(--accent-color)] mx-auto" size={48} />
+            <h2 className="text-xl font-black text-[var(--text-primary)] uppercase tracking-wide">Aggregating Neural Metrics</h2>
+            <p className="text-[var(--text-secondary)] font-bold text-sm">The AI is finalizing your evaluation. Please hold... ({elapsedTime}s)</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (error || !results) {
+    return (
+      <div className="min-h-[calc(100vh-80px)] flex flex-col items-center justify-center px-4 text-center">
+        <XCircle className="text-red-500 mb-4" size={48} />
+        <h2 className="text-xl font-black text-[var(--text-primary)]">Data Retrieval Failed</h2>
+        <p className="text-[var(--text-secondary)] mt-2">The session is invalid or the data pipeline crashed.</p>
+        <button onClick={() => router.push("/")} className="mt-6 px-4 py-2 bg-[var(--surface-card-color)] border border-[var(--border-color)] text-[var(--text-primary)] font-bold uppercase tracking-wider rounded">Return to Dashboard</button>
+      </div>
+    );
+  }
 
   const { metrics, detailed_evaluations } = results;
   const isSuspicious = metrics.overall_interview_score >= 95;
 
   return (
     <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-8 md:py-12 min-h-[calc(100vh-80px)]">
-      
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-[var(--border-color)] pb-6 mb-8 gap-4">
         <div>
           <button onClick={() => router.push("/")} className="flex items-center gap-2 text-[var(--text-secondary)] hover:text-[var(--accent-color)] mb-4 text-sm font-bold transition-colors">
@@ -136,7 +220,7 @@ export default function InterviewResultsPage() {
               </tr>
             </thead>
             <tbody className="text-sm divide-y divide-[var(--border-color)]/50">
-              {detailed_evaluations.map((evalData: DetailedEvaluation) => (
+              {detailed_evaluations.map((evalData: any) => (
                 <tr key={evalData.question_id} className="hover:bg-[var(--bg-color)]/50 transition-colors">
                   <td className="p-3 md:p-4 font-black text-[var(--text-primary)]">{evalData.question_id}</td>
                   <td className="p-3 md:p-4 text-[var(--text-primary)] font-bold">{evalData.structure_score}%</td>
@@ -150,7 +234,6 @@ export default function InterviewResultsPage() {
           </table>
         </div>
       </div>
-
     </div>
   );
 }
