@@ -11,9 +11,6 @@ router = APIRouter()
 
 @router.post("/initialize", response_model=InterviewBlueprintResponse, status_code=status.HTTP_201_CREATED)
 async def initialize_interview(request: InterviewInitializeRequest, db: Session = Depends(get_db)):
-    """
-    Initializes a new interview session and locks the JSON blueprint into SQLite.
-    """
     try:
         blueprint = generate_interview_blueprint(
             job_description=request.job_description,
@@ -44,20 +41,24 @@ async def initialize_interview(request: InterviewInitializeRequest, db: Session 
 @router.get("/{session_id}/results")
 async def get_interview_results(session_id: str, db: Session = Depends(get_db)):
     """
-    Aggregates all background evaluations and computes the final Composite Score.
+    Optimized Read-Only Results Fetcher.
+    Prevents database write-locks during rapid frontend polling cycles.
     """
     session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # If the background thread hasn't explicitly flagged completion, return pending state immediately
+    if session.status != "COMPLETED":
+        return {"status": "pending", "message": "Evaluations are still processing in the background queue."}
+
     evaluations = db.query(QuestionEvaluation).filter(QuestionEvaluation.session_id == session_id).all()
-    
     if not evaluations:
-        return {"status": "pending", "message": "No evaluations processed yet. Check background worker logs."}
+        return {"status": "pending", "message": "Compiling data metrics..."}
 
     total_questions_answered = len(evaluations)
     
-    # Calculate Averages (protect against division by zero and nulls)
+    # Execute lookups cleanly without modifying database rows
     avg_structure = sum((e.structure_score or 0) for e in evaluations) / total_questions_answered
     avg_correctness = sum((e.correctness_score or 0) for e in evaluations) / total_questions_answered
     avg_completeness = sum((e.completeness_score or 0) for e in evaluations) / total_questions_answered
@@ -65,12 +66,7 @@ async def get_interview_results(session_id: str, db: Session = Depends(get_db)):
     avg_wpm = sum((e.wpm or 0) for e in evaluations) / total_questions_answered
     total_fillers = sum((e.filler_words_count or 0) for e in evaluations)
 
-    # Pure interview performance calculation
     overall_interview_score = (avg_structure + avg_correctness + avg_completeness) / 3
-
-    # Lock session state
-    session.status = "COMPLETED"
-    db.commit()
 
     return {
         "session_id": session_id,

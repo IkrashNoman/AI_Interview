@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef, use as reactUse } from "react";
-import { useRouter, useParams } from "next/navigation";
+import { useEffect, useState, useRef } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { ShieldAlert, Square, Activity, Loader2, XCircle } from "lucide-react";
 import { toast } from "react-toastify";
-import { apiClient } from "@/app/lib/api";
 import { MicVAD } from "@ricky0123/vad-web";
 
 interface Question {
@@ -22,6 +21,7 @@ export default function CoreInterviewLoop() {
   
   const sessionId = (params?.["session-id"] || params?.["session_id"] || params?.session_id) as string;
 
+  // --- State ---
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [strikes, setStrikes] = useState(0);
@@ -35,19 +35,24 @@ export default function CoreInterviewLoop() {
   
   const [screenCountdown, setScreenCountdown] = useState<number | null>(null);
 
+  // --- Refs to manage stale closures and async cycles ---
   const questionsRef = useRef<Question[]>([]);
   const currentIndexRef = useRef(0);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<BlobPart[]>([]);
   const absenceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // --- Streaming Refs ---
+  const socketRef = useRef<WebSocket | null>(null);
+
+  // --- VAD Refs ---
   const vadInstanceRef = useRef<MicVAD | null>(null);
   const audioOnlyStreamRef = useRef<MediaStream | null>(null);
   const silenceCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSpokeTimeRef = useRef<number>(Date.now());
 
+  // --- Proctoring Refs ---
   const screenStreamRef = useRef<MediaStream | null>(null);
   const screenRecorderRef = useRef<MediaRecorder | null>(null);
   const screenChunksRef = useRef<BlobPart[]>([]);
@@ -136,6 +141,9 @@ export default function CoreInterviewLoop() {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
           mediaRecorderRef.current.pause();
         }
+        if (socketRef.current) {
+          socketRef.current.close();
+        }
         window.speechSynthesis.pause();
 
         toast.warning("Screen sharing lost! You have 5 seconds to share again or you will receive a strike.");
@@ -206,7 +214,7 @@ export default function CoreInterviewLoop() {
         onFrameProcessed: (probabilities: any) => {
           const isSpeechProb = probabilities.isSpeech;
           setMicVolume(Math.round(isSpeechProb * 100));
-          if (isSpeechProb > 0.85) {
+          if (isSpeechProb > 0.50) {
             lastSpokeTimeRef.current = Date.now();
           }
         },
@@ -215,7 +223,7 @@ export default function CoreInterviewLoop() {
       vadInstanceRef.current = vad;
       vad.pause();
     } catch (err) {
-      console.error("Failed to initialize VAD model. Ensure you have internet access for CDN:", err);
+      console.error("Failed to initialize VAD model:", err);
     }
   };
 
@@ -226,6 +234,10 @@ export default function CoreInterviewLoop() {
     if (vadInstanceRef.current) {
       try { vadInstanceRef.current.destroy(); } catch (e) {}
       vadInstanceRef.current = null;
+    }
+    if (socketRef.current) {
+      socketRef.current.close();
+      socketRef.current = null;
     }
     stopScreenRecording();
     window.speechSynthesis.cancel();
@@ -252,36 +264,101 @@ export default function CoreInterviewLoop() {
     else loadVoicesAndSpeak();
   };
 
+  // --- WebSocket Streaming Initialization & Loop Execution ---
   const startRecording = () => {
     const audioOnlyStream = audioOnlyStreamRef.current;
     if (!audioOnlyStream) return;
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-    const mediaRecorder = new MediaRecorder(audioOnlyStream, { mimeType });
-    mediaRecorderRef.current = mediaRecorder;
-    audioChunksRef.current = [];
 
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-    mediaRecorder.onstop = async () => {
-      stopVADMonitoring();
-      setIsRecording(false);
-      setMicVolume(0);
-      await processAudioChunk(mimeType);
+    // Use absolute routing scheme relative to backend host definitions
+    const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL|| "ws://127.0.0.1:8000"}/api/v1/audio/stream`;
+    const socket = new WebSocket(wsUrl);
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      const currentQ = questionsRef.current[currentIndexRef.current];
+      // Send handshake initialization payload
+      socket.send(JSON.stringify({
+        type: "handshake",
+        session_id: sessionId,
+        question_id: currentQ.id
+      }));
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+      const mediaRecorder = new MediaRecorder(audioOnlyStream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = async (e) => {
+        if (e.data.size > 0 && socket.readyState === WebSocket.OPEN) {
+          // Send raw binary chunks downstream instantly
+          socket.send(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        stopVADMonitoring();
+        setIsRecording(false);
+        setMicVolume(0);
+        setIsProcessingChunk(true);
+      };
+
+      // Forces continuous slice generation every 250ms
+      mediaRecorder.start(250);
+      setIsRecording(true);
+      startVADMonitoring();
     };
 
-    mediaRecorder.start();
-    setIsRecording(true);
-    startVADMonitoring();
+    socket.onmessage = (event) => {
+      try {
+        const response = JSON.parse(event.data);
+        setIsProcessingChunk(false);
+
+        if (response.status === "clarification_required" || response.status === "elaboration_required" || response.status === "explanation_required") {
+          const dynamicText = response.simplified_question || response.explanation || response.text;
+          toast.info("AI Intercepting Pipeline...");
+          setCurrentQuestionText(dynamicText);
+          socket.close(); // Clean old context socket
+          speakQuestion(dynamicText);
+        } else if (response.status === "success") {
+          socket.close();
+          const currentIdx = currentIndexRef.current;
+          const currentQuestions = questionsRef.current;
+
+          if (currentIdx < currentQuestions.length - 1) {
+            const nextIndex = currentIdx + 1;
+            setCurrentIndex(nextIndex);
+            setCurrentQuestionText(currentQuestions[nextIndex].question_text);
+            speakQuestion(currentQuestions[nextIndex].question_text);
+          } else {
+            stopScreenRecording();
+            router.push(`/interview/${sessionId}/results`);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to compile streamed frame layout:", err);
+      }
+    };
+
+    socket.onerror = () => {
+      toast.error("Streaming server connection error.");
+    };
+
+    socket.onclose = () => {
+      setIsRecording(false);
+    };
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
     }
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      // Signal explicit turn ending to the server
+      socketRef.current.send(JSON.stringify({ type: "END_OF_TURN" }));
+    }
   };
 
   const startVADMonitoring = () => {
     if (!vadInstanceRef.current) return;
-    // Exactly current time. No +2000ms offset. 6 seconds means 6 seconds.
     lastSpokeTimeRef.current = Date.now();
     vadInstanceRef.current.start();
 
@@ -290,15 +367,18 @@ export default function CoreInterviewLoop() {
       if (mediaRecorderRef.current?.state !== "recording") return;
       const silenceDuration = Date.now() - lastSpokeTimeRef.current;
       
-      // Stop recording strictly after 6000ms of absolute silence
-      if (silenceDuration > 6000) {
+      // Accelerated turn completion checking (2000ms threshold for real-time responsiveness)
+      if (silenceDuration > 2000) {
         stopRecording();
       }
-    }, 250);
+    }, 200);
   };
 
   const stopVADMonitoring = () => {
-    if (silenceCheckIntervalRef.current) clearInterval(silenceCheckIntervalRef.current);
+    if (silenceCheckIntervalRef.current) {
+      clearInterval(silenceCheckIntervalRef.current);
+      silenceCheckIntervalRef.current = null;
+    }
     vadInstanceRef.current?.pause();
   };
 
@@ -332,64 +412,6 @@ export default function CoreInterviewLoop() {
   const handleEndCall = () => {
     cleanupAudio();
     router.push(`/interview/${sessionId}/results`);
-  };
-
-  // The functional real API handoff
-  const processAudioChunk = async (mimeType: string) => {
-    if (audioChunksRef.current.length === 0) return;
-    setIsProcessingChunk(true);
-
-    const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-    const currentIdx = currentIndexRef.current;
-    const currentQuestions = questionsRef.current;
-    const currentQ = currentQuestions[currentIdx];
-    const fileExtension = mimeType.includes("mp4") ? "m4a" : "webm";
-
-    const formData = new FormData();
-    formData.append("session_id", sessionId);
-    formData.append("question_id", currentQ.id.toString());
-    formData.append("audio_blob", audioBlob, `${sessionId}_q${currentQ.id}.${fileExtension}`);
-
-    try {
-      // Send real data to backend. Ensure this endpoint maps correctly to your FastAPI setup.
-      const response = await apiClient.post("/api/v1/audio/process-chunk", formData, {
-        headers: { "Content-Type": "multipart/form-data" }
-      });
-
-      if (response.data.status === "clarification_required") {
-        toast.info("Clarifying question...");
-        setCurrentQuestionText(response.data.simplified_question);
-        // Feed the simplified question to TTS. Do NOT increment currentIndex.
-        speakQuestion(response.data.simplified_question);
-      } else {
-        // Standard execution block: move forward
-        if (currentIdx < currentQuestions.length - 1) {
-          const nextIndex = currentIdx + 1;
-          setCurrentIndex(nextIndex);
-          setCurrentQuestionText(currentQuestions[nextIndex].question_text);
-          speakQuestion(currentQuestions[nextIndex].question_text);
-        } else {
-          stopScreenRecording();
-          router.push(`/interview/${sessionId}/results`);
-        }
-      }
-    } catch (error) {
-      console.error("Audio processing failed:", error);
-      toast.error("Failed to upload audio chunk. Retrying next connection...");
-      
-      // Fallback progression to prevent hard locks if server drops request
-      if (currentIdx < currentQuestions.length - 1) {
-        const nextIndex = currentIdx + 1;
-        setCurrentIndex(nextIndex);
-        setCurrentQuestionText(currentQuestions[nextIndex].question_text);
-        speakQuestion(currentQuestions[nextIndex].question_text);
-      } else {
-        stopScreenRecording();
-        router.push(`/interview/${sessionId}/results`);
-      }
-    } finally {
-      setIsProcessingChunk(false);
-    }
   };
 
   const currentQuestion = questions[currentIndex];
@@ -445,7 +467,7 @@ export default function CoreInterviewLoop() {
                   if (shared && pendingScreenShareActionRef.current) {
                     pendingScreenShareActionRef.current();
                     pendingScreenShareActionRef.current = null;
-                  }
+                }
                 }}
                 className="w-full py-4 bg-[var(--accent-color)] text-[var(--text-inverse)] font-black uppercase tracking-widest rounded-lg hover:opacity-90"
               >Share Entire Screen to Resume</button>

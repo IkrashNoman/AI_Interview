@@ -1,8 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import parser, matcher
+from app.api.v1 import parser, matcher, chunk_router
 from app.api.v1.interview import router as interview_router
-# Add these imports at the top
 from app.core.database import engine
 from app import models
 
@@ -10,7 +9,7 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="AI Interview Coach API", 
-    description="Phase 1: Resume Parsers & Context Engines"
+    description="Phase 2: Interview Engine with Real-Time Audio Streaming and Evaluation",
 )
 
 # CRITICAL: This allows your Next.js frontend (localhost:3000) to talk to this backend
@@ -26,6 +25,9 @@ app.add_middleware(
 app.include_router(parser.router, prefix="/api/v1/parser", tags=["Parser"])
 app.include_router(matcher.router, prefix="/api/v1/matcher", tags=["Matcher"])
 app.include_router(interview_router, prefix="/api/v1/interview", tags=["Interview Engine"])
+
+# Injecting the WebSocket Router
+app.include_router(chunk_router.router, prefix="/api/v1/audio", tags=["Audio Streaming"])
 
 @app.get("/")
 def health_check():
