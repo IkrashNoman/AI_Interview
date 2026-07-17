@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState, useRef, use as reactUse } from "react";
+import { useRouter, useParams } from "next/navigation";
 import { ShieldAlert, Square, Activity, Loader2, XCircle } from "lucide-react";
 import { toast } from "react-toastify";
 import { apiClient } from "@/app/lib/api";
@@ -199,7 +199,6 @@ export default function CoreInterviewLoop() {
     audioOnlyStreamRef.current = audioOnlyStream;
 
     try {
-      // FORCE Next.js to fetch from CDN instead of failing on local WASM resolution
       const vadOptions: any = {
         workletURL: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.7/dist/vad.worklet.bundle.min.js",
         modelURL: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.7/dist/silero_vad.onnx",
@@ -282,13 +281,16 @@ export default function CoreInterviewLoop() {
 
   const startVADMonitoring = () => {
     if (!vadInstanceRef.current) return;
-    lastSpokeTimeRef.current = Date.now() + 2000;
+    // Exactly current time. No +2000ms offset. 6 seconds means 6 seconds.
+    lastSpokeTimeRef.current = Date.now();
     vadInstanceRef.current.start();
 
     if (silenceCheckIntervalRef.current) clearInterval(silenceCheckIntervalRef.current);
     silenceCheckIntervalRef.current = setInterval(() => {
       if (mediaRecorderRef.current?.state !== "recording") return;
       const silenceDuration = Date.now() - lastSpokeTimeRef.current;
+      
+      // Stop recording strictly after 6000ms of absolute silence
       if (silenceDuration > 6000) {
         stopRecording();
       }
@@ -332,26 +334,62 @@ export default function CoreInterviewLoop() {
     router.push(`/interview/${sessionId}/results`);
   };
 
+  // The functional real API handoff
   const processAudioChunk = async (mimeType: string) => {
     if (audioChunksRef.current.length === 0) return;
     setIsProcessingChunk(true);
 
-    // TODO: Upload the actual chunk to your FastAPI backend here.
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
+    const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
     const currentIdx = currentIndexRef.current;
     const currentQuestions = questionsRef.current;
+    const currentQ = currentQuestions[currentIdx];
+    const fileExtension = mimeType.includes("mp4") ? "m4a" : "webm";
 
-    if (currentIdx < currentQuestions.length - 1) {
-      const nextIndex = currentIdx + 1;
-      setCurrentIndex(nextIndex);
-      setCurrentQuestionText(currentQuestions[nextIndex].question_text);
-      speakQuestion(currentQuestions[nextIndex].question_text);
-    } else {
-      stopScreenRecording();
-      router.push(`/interview/${sessionId}/results`);
+    const formData = new FormData();
+    formData.append("session_id", sessionId);
+    formData.append("question_id", currentQ.id.toString());
+    formData.append("audio_blob", audioBlob, `${sessionId}_q${currentQ.id}.${fileExtension}`);
+
+    try {
+      // Send real data to backend. Ensure this endpoint maps correctly to your FastAPI setup.
+      const response = await apiClient.post("/api/v1/audio/process-chunk", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+
+      if (response.data.status === "clarification_required") {
+        toast.info("Clarifying question...");
+        setCurrentQuestionText(response.data.simplified_question);
+        // Feed the simplified question to TTS. Do NOT increment currentIndex.
+        speakQuestion(response.data.simplified_question);
+      } else {
+        // Standard execution block: move forward
+        if (currentIdx < currentQuestions.length - 1) {
+          const nextIndex = currentIdx + 1;
+          setCurrentIndex(nextIndex);
+          setCurrentQuestionText(currentQuestions[nextIndex].question_text);
+          speakQuestion(currentQuestions[nextIndex].question_text);
+        } else {
+          stopScreenRecording();
+          router.push(`/interview/${sessionId}/results`);
+        }
+      }
+    } catch (error) {
+      console.error("Audio processing failed:", error);
+      toast.error("Failed to upload audio chunk. Retrying next connection...");
+      
+      // Fallback progression to prevent hard locks if server drops request
+      if (currentIdx < currentQuestions.length - 1) {
+        const nextIndex = currentIdx + 1;
+        setCurrentIndex(nextIndex);
+        setCurrentQuestionText(currentQuestions[nextIndex].question_text);
+        speakQuestion(currentQuestions[nextIndex].question_text);
+      } else {
+        stopScreenRecording();
+        router.push(`/interview/${sessionId}/results`);
+      }
+    } finally {
+      setIsProcessingChunk(false);
     }
-    setIsProcessingChunk(false);
   };
 
   const currentQuestion = questions[currentIndex];
