@@ -19,3 +19,4 @@ groq==0.13.1
 pydantic[email]
 google
 google-genai
+faster-whisper

@@ -1,5 +1,5 @@
 "use client";
-
+(globalThis as any).ORT_WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ShieldAlert, Square, Activity, Loader2, XCircle } from "lucide-react";

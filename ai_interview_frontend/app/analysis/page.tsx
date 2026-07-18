@@ -172,13 +172,22 @@ export default function AnalysisPage() {
     }
   };
 
-  const handleInterviewLaunch = (jobId: string) => {
+  const handleInterviewLaunch = (input: string, isFullJD: boolean = false) => {
     if (!isUserLoggedIn) {
       setShowAuthModal(true);
       return;
     }
-    // Save the context so the initialize page knows what role/jd the user is preparing for
-    sessionStorage.setItem("interviewTargetJobId", jobId);
+    
+    if (isFullJD) {
+      // If it's a full JD provided by the user
+      sessionStorage.setItem("interviewTargetJD", input);
+      sessionStorage.removeItem("suggestedJobId");
+    } else {
+      // If it's a suggestion ID
+      sessionStorage.setItem("suggestedJobId", input);
+      sessionStorage.removeItem("interviewTargetJD");
+    }
+    
     router.push(`/interview`);
   };
 
@@ -539,6 +548,19 @@ export default function AnalysisPage() {
                     </div>
                   )}
                 </div>
+              {/* Start Interview Button */}
+                {matchData.match_percentage >= 75 ? (
+                <button 
+                  onClick={() => handleInterviewLaunch(jobDescription, true)}
+                  className="mt-8 w-full py-4 bg-green-600 text-white font-black text-lg rounded-xl hover:bg-green-700 transition-all shadow-lg flex justify-center items-center gap-3 uppercase tracking-wide"
+                >
+                  <PlayCircle size={24} /> Start Mock Interview
+                </button>
+              ) : (
+                <div className="mt-8 p-4 bg-red-500/10 border border-red-500/50 rounded-xl text-red-500 text-sm font-bold text-center">
+                  Analysis: {matchData.match_percentage}% Match. (Unlock Interview at 75%+)
+                </div>
+              )}
               </div>
             )}
 

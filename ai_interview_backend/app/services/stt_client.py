@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # GPU Hardware Handoff optimization
 try:
     # Uses CUDA and int8_float16 compression to maximize processing speeds within 4GB VRAM boundaries
-    model = WhisperModel("base.en", device="cuda", compute_type="int8_float16")
+    model = WhisperModel("base.en", device="cpu", compute_type="int8_float16")
 except Exception as e:
     logger.warning("CUDA execution fallback tracking triggered. Defaulting processing to host CPU.")
     model = WhisperModel("base.en", device="cpu", compute_type="int8")
