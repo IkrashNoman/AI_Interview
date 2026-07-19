@@ -1,10 +1,10 @@
 "use client";
-(globalThis as any).ORT_WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
+
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ShieldAlert, Square, Activity, Loader2, XCircle } from "lucide-react";
 import { toast } from "react-toastify";
-import { MicVAD } from "@ricky0123/vad-web";
+import { MicVAD } from "@ricky0123/vad";
 
 interface Question {
   id: number;
@@ -35,7 +35,8 @@ export default function CoreInterviewLoop() {
   
   const [screenCountdown, setScreenCountdown] = useState<number | null>(null);
 
-  // --- Refs to manage stale closures and async cycles ---
+  // --- Refs to manage stale closures, strict mode loops, and async cycles ---
+  const hasInitialized = useRef(false);
   const questionsRef = useRef<Question[]>([]);
   const currentIndexRef = useRef(0);
   
@@ -71,6 +72,10 @@ export default function CoreInterviewLoop() {
   }, [currentIndex]);
 
   useEffect(() => {
+    // Lock execution to prevent duplicate triggers under React Strict Mode double-invocation
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+
     const blueprintStr = sessionStorage.getItem("interviewBlueprint");
     if (!blueprintStr) {
       toast.error("Unauthorized access. Please initialize a session first.");
@@ -208,9 +213,8 @@ export default function CoreInterviewLoop() {
 
     try {
       const vadOptions: any = {
-        workletURL: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.7/dist/vad.worklet.bundle.min.js",
-        modelURL: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.7/dist/silero_vad.onnx",
         getStream: async () => audioOnlyStream,
+        workletURL: "/vad.worklet.js", 
         onFrameProcessed: (probabilities: any) => {
           const isSpeechProb = probabilities.isSpeech;
           setMicVolume(Math.round(isSpeechProb * 100));
@@ -232,7 +236,7 @@ export default function CoreInterviewLoop() {
     if (screenCountdownIntervalRef.current) clearInterval(screenCountdownIntervalRef.current);
     if (screenLossTimerRef.current) clearTimeout(screenLossTimerRef.current);
     if (vadInstanceRef.current) {
-      try { vadInstanceRef.current.destroy(); } catch (e) {}
+      try { (vadInstanceRef.current as any).destroy?.(); } catch (e) {}
       vadInstanceRef.current = null;
     }
     if (socketRef.current) {
@@ -264,19 +268,16 @@ export default function CoreInterviewLoop() {
     else loadVoicesAndSpeak();
   };
 
-  // --- WebSocket Streaming Initialization & Loop Execution ---
   const startRecording = () => {
     const audioOnlyStream = audioOnlyStreamRef.current;
     if (!audioOnlyStream) return;
 
-    // Use absolute routing scheme relative to backend host definitions
     const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL|| "ws://127.0.0.1:8000"}/api/v1/audio/stream`;
     const socket = new WebSocket(wsUrl);
     socketRef.current = socket;
 
     socket.onopen = () => {
       const currentQ = questionsRef.current[currentIndexRef.current];
-      // Send handshake initialization payload
       socket.send(JSON.stringify({
         type: "handshake",
         session_id: sessionId,
@@ -289,7 +290,6 @@ export default function CoreInterviewLoop() {
 
       mediaRecorder.ondataavailable = async (e) => {
         if (e.data.size > 0 && socket.readyState === WebSocket.OPEN) {
-          // Send raw binary chunks downstream instantly
           socket.send(e.data);
         }
       };
@@ -301,7 +301,6 @@ export default function CoreInterviewLoop() {
         setIsProcessingChunk(true);
       };
 
-      // Forces continuous slice generation every 250ms
       mediaRecorder.start(250);
       setIsRecording(true);
       startVADMonitoring();
@@ -316,7 +315,7 @@ export default function CoreInterviewLoop() {
           const dynamicText = response.simplified_question || response.explanation || response.text;
           toast.info("AI Intercepting Pipeline...");
           setCurrentQuestionText(dynamicText);
-          socket.close(); // Clean old context socket
+          socket.close(); 
           speakQuestion(dynamicText);
         } else if (response.status === "success") {
           socket.close();
@@ -352,7 +351,6 @@ export default function CoreInterviewLoop() {
       mediaRecorderRef.current.stop();
     }
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      // Signal explicit turn ending to the server
       socketRef.current.send(JSON.stringify({ type: "END_OF_TURN" }));
     }
   };
@@ -367,7 +365,6 @@ export default function CoreInterviewLoop() {
       if (mediaRecorderRef.current?.state !== "recording") return;
       const silenceDuration = Date.now() - lastSpokeTimeRef.current;
       
-      // Accelerated turn completion checking (2000ms threshold for real-time responsiveness)
       if (silenceDuration > 2000) {
         stopRecording();
       }
