@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Camera, Mic, Volume2, CheckCircle, Loader2, PlayCircle, ShieldAlert, RefreshCw, ScreenShare } from "lucide-react";
+import { Camera, Mic, Volume2, CheckCircle, Loader2, PlayCircle, ShieldAlert, RefreshCw, ScreenShare, Activity } from "lucide-react";
 import { apiClient } from "../lib/api";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -17,18 +17,24 @@ export default function PreFlightPage() {
   const [screenTested, setScreenTested] = useState(false);
   const [consentGiven, setConsentGiven] = useState(false);
   
-  // --- Recording State ---
+  // --- Recording & VAD States ---
   const [isRecordingMic, setIsRecordingMic] = useState(false);
   const [micAudioUrl, setMicAudioUrl] = useState<string | null>(null);
   const [isCheckingScreen, setIsCheckingScreen] = useState(false);
+  const [localMicVolume, setLocalMicVolume] = useState(0);
+  const [speechDetected, setSpeechDetected] = useState(false);
   
   // --- Initialization State ---
   const [isInitializing, setIsInitializing] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
-  const screenPreviewRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
+  
+  // --- VAD Testing Refs ---
+  const localVadInstanceRef = useRef<any>(null);
+  const localAudioStreamRef = useRef<MediaStream | null>(null);
+  const hasInitialized = useRef(false);
 
   // 1. Camera Logic
   const startCamera = async () => {
@@ -45,14 +51,29 @@ export default function PreFlightPage() {
   };
 
   useEffect(() => {
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+    
     startCamera();
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
       }
+      cleanupLocalVAD();
     };
   }, []);
+
+  const cleanupLocalVAD = () => {
+    if (localVadInstanceRef.current) {
+      try { localVadInstanceRef.current.destroy?.(); } catch (e) {}
+      localVadInstanceRef.current = null;
+    }
+    if (localAudioStreamRef.current) {
+      localAudioStreamRef.current.getTracks().forEach(track => track.stop());
+      localAudioStreamRef.current = null;
+    }
+  };
 
   // 2. Speaker Logic
   const testSpeaker = () => {
@@ -63,17 +84,47 @@ export default function PreFlightPage() {
       .catch(() => toast.error("Failed to play test audio. Check your volume."));
   };
 
-  // 3. Microphone Logic
+  // 3. Microphone & Local Dynamic VAD Pipeline Execution
   const testMicrophone = async () => {
     try {
       setMicTested(false);
+      setSpeechDetected(false);
+      setLocalMicVolume(0);
+      cleanupLocalVAD();
       
       if (micAudioUrl) {
         URL.revokeObjectURL(micAudioUrl);
         setMicAudioUrl(null);
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+      });
+      localAudioStreamRef.current = stream;
+
+      // Lazy import browser-optimized variant
+      const { MicVAD } = await import("@ricky0123/vad-web");
+
+      const vadOptions: any = {
+        getStream: async () => stream,
+
+        baseAssetPath: "/",
+        onnxWASMBasePath: "/",
+        model: "v5",
+
+        onFrameProcessed: (probabilities: any) => {
+          const isSpeechProb = probabilities.isSpeech;
+          setLocalMicVolume(Math.round(isSpeechProb * 100));
+          if (isSpeechProb > 0.50) {
+            setSpeechDetected(true);
+          }
+        },
+      };
+
+      const vad = await MicVAD.new(vadOptions);
+      localVadInstanceRef.current = vad;
+      vad.start();
+
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -87,7 +138,9 @@ export default function PreFlightPage() {
         const audioUrl = URL.createObjectURL(audioBlob);
         setMicAudioUrl(audioUrl);
         setMicTested(true);
-        stream.getTracks().forEach(track => track.stop());
+        
+        vad.pause();
+        setIsRecordingMic(false);
       };
 
       mediaRecorder.start();
@@ -96,16 +149,16 @@ export default function PreFlightPage() {
       setTimeout(() => {
         if (mediaRecorder.state === "recording") {
           mediaRecorder.stop();
-          setIsRecordingMic(false);
         }
-      }, 10005);
+      }, 6000);
 
-    } catch (err) {
-      toast.error("Microphone access denied.");
+    } catch (err: any) {
+      console.log("===[ VAD RUNTIME FAILURE ]===", err);
+      toast.error("Microphone access denied or VAD engine initialization failed.");
     }
   };
 
-  // 4. Screen-Share Logic (Saves active stream to window context)
+  // 4. Screen-Share Logic
   const testScreenShare = async () => {
     setIsCheckingScreen(true);
     setScreenTested(false);
@@ -125,24 +178,18 @@ export default function PreFlightPage() {
         return;
       }
 
-      // Persist stream in window memory for core interview loop handoff
       if (typeof window !== "undefined") {
         (window as any).__screenStream = stream;
       }
 
-      if (screenPreviewRef.current) {
-        screenPreviewRef.current.srcObject = stream;
-      }
       setScreenTested(true);
       setIsCheckingScreen(false);
 
-      // Reset validation if user manually cancels sharing on this page
       track.onended = () => {
         if (typeof window !== "undefined") {
           (window as any).__screenStream = null;
         }
         setScreenTested(false);
-        if (screenPreviewRef.current) screenPreviewRef.current.srcObject = null;
         toast.error("Screen sharing stopped. Entire screen sharing is required to proceed.");
       };
 
@@ -155,16 +202,15 @@ export default function PreFlightPage() {
   // 5. Initialize Backend Session
   const handleStartInterview = async () => {
     setIsInitializing(true);
+    cleanupLocalVAD();
     
     const savedResume = sessionStorage.getItem("extractedResume");
-    
     if (!savedResume) {
       toast.error("Resume data missing. Please return to analysis.");
       router.push("/analysis");
       return;
     }
 
-    // Stop camera feed so it is free to be re-captured in the next screen
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => track.stop());
@@ -188,6 +234,7 @@ export default function PreFlightPage() {
   };
 
   const allTestsPassed = cameraTested && speakerTested && micTested && screenTested && consentGiven;
+  const visualizerScale = isRecordingMic ? 1 + (localMicVolume / 100) : 1;
 
   return (
     <div className="max-w-[1000px] mx-auto px-4 py-8 min-h-[calc(100vh-80px)]">
@@ -279,24 +326,41 @@ export default function PreFlightPage() {
                 <div className="flex items-center gap-3">
                   <Mic className={micTested ? "text-[var(--accent-color)]" : "text-[var(--text-secondary)]"} />
                   <div>
-                    <h4 className="font-bold text-[var(--accent-color)]">Microphone Input</h4>
-                    <p className="text-xs text-[var(--text-secondary)]">Record a test clip.</p>
+                    <h4 className="font-bold text-[var(--accent-color)]">Microphone & VAD Check</h4>
+                    <p className="text-xs text-[var(--text-secondary)]">Say something to wake up engine analytics.</p>
                   </div>
                 </div>
                 
                 <div className="flex items-center gap-3">
                   {isRecordingMic ? (
                     <span className="text-[var(--accent-color)] text-xs font-bold animate-pulse flex items-center gap-1">
-                      <div className="w-2 h-2 bg-[var(--accent-color)] rounded-full"></div> Recording...
+                      <div className="w-2 h-2 bg-[var(--accent-color)] rounded-full"></div> Listening...
                     </span>
                   ) : (
                     <button onClick={testMicrophone} className="px-3 py-1.5 bg-[var(--bg-color)] border border-[var(--border-color)] text-[var(--text-primary)] text-xs font-bold rounded hover:border-[var(--accent-color)] hover:text-[var(--accent-color)] transition-all">
-                      {micTested ? "Retest Mic" : "Test Mic"}
+                      {micTested ? "Retest Audio Model" : "Verify Voice Engine"}
                     </button>
                   )}
                   {micTested && !isRecordingMic && <CheckCircle className="text-[var(--accent-color)]" />}
                 </div>
               </div>
+              
+              {isRecordingMic && (
+                <div className="mt-4 p-4 rounded-xl bg-black/10 border border-[var(--border-color)]/40 flex flex-col items-center justify-center gap-3">
+                  <div className="relative w-16 h-16 flex items-center justify-center">
+                    <div
+                      className="absolute inset-0 border border-[var(--accent-color)] rounded-full transition-all duration-700 opacity-60"
+                      style={{ transform: `scale(${visualizerScale})` }}
+                    />
+                    <div className="absolute inset-2 bg-[var(--accent-color)] rounded-full flex items-center justify-center">
+                      <Activity className="text-white" size={18} />
+                    </div>
+                  </div>
+                  <p className="text-xs font-black tracking-widest uppercase text-[var(--text-secondary)] text-center">
+                    {speechDetected ? "✓ Dynamic Vocal Signal Decoded" : "Awaiting Audio Frequency..."}
+                  </p>
+                </div>
+              )}
               
               {micAudioUrl && !isRecordingMic && (
                 <div className="mt-4 pt-4 border-t border-[var(--border-color)]/30">

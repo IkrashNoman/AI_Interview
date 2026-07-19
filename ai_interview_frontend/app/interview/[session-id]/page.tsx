@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ShieldAlert, Square, Activity, Loader2, XCircle } from "lucide-react";
 import { toast } from "react-toastify";
-import { MicVAD } from "@ricky0123/vad";
+import { MicVAD } from "@ricky0123/vad-web";
 
 interface Question {
   id: number;
@@ -212,17 +212,19 @@ export default function CoreInterviewLoop() {
     audioOnlyStreamRef.current = audioOnlyStream;
 
     try {
-      const vadOptions: any = {
-        getStream: async () => audioOnlyStream,
-        workletURL: "/vad.worklet.js", 
-        onFrameProcessed: (probabilities: any) => {
-          const isSpeechProb = probabilities.isSpeech;
-          setMicVolume(Math.round(isSpeechProb * 100));
-          if (isSpeechProb > 0.50) {
-            lastSpokeTimeRef.current = Date.now();
-          }
-        },
-      };
+    const vadOptions: any = {
+      getStream: async () => audioOnlyStream,
+      baseAssetPath: "/",
+      onnxWASMBasePath: "/",
+      model: "v5",
+      onFrameProcessed: (probabilities: any) => {
+        const isSpeechProb = probabilities.isSpeech;
+        setMicVolume(Math.round(isSpeechProb * 100));
+        if (isSpeechProb > 0.50) {
+          lastSpokeTimeRef.current = Date.now();
+        }
+      },
+    };
       const vad = await MicVAD.new(vadOptions);
       vadInstanceRef.current = vad;
       vad.pause();

@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
-    "@ricky0123/vad": "^0.2.4",
+    "@ricky0123/vad-web": "^0.0.30",
     "axios": "^1.18.1",
     "lucide-react": "^1.23.0",
     "next": "^16.2.10",
